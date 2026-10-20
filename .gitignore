@@ -222,3 +222,6 @@ __marimo__/
 
 # Generated data (rebuild with: python generate_data.py)
 *.db
+
+# Personal interview notes
+sid_notes.txt
