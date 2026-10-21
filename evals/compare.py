@@ -10,7 +10,7 @@ Deliberately ignored, because they don't change the business answer:
 - percent vs fraction (87.8 vs 0.878)
 - extra rows (AI listed all 25 AMs; golden kept the top 10)
 
-Known limits of v1 (improve in week 3):
+Known limits of v1:
 - a wrong query could match by coincidence
 - "top 10" questions accept a longer list, so ranking cut-offs aren't checked
 """

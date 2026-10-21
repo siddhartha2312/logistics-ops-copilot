@@ -223,5 +223,8 @@ __marimo__/
 # Generated data (rebuild with: python generate_data.py)
 *.db
 
-# Personal interview notes
+# Private notes (never commit)
 sid_notes.txt
+sid_playbook.md
+PLAN.md
+llm_basics.ipynb

@@ -156,7 +156,7 @@ def answer_in_english(client, question, sql, result, max_rows=50):
 def ask(client, conn, system_prompt, question):
     """Full pipeline for one question: SQL, run (one retry on error), answer.
 
-    Returns a dict, so the eval script on Day 5 can reuse it.
+    Returns a dict, so evals/run_evals.py can reuse it.
     """
     start = time.perf_counter()
     sql, _, cost = question_to_sql(client, system_prompt, question)

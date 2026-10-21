@@ -1,7 +1,7 @@
 """Run every golden query and save question + SQL + answer to a CSV.
 
 Run from the project root:  python evals/build_golden.py
-Output: evals/golden_questions.csv (the answer key for evals in week 3)
+Output: evals/golden_questions.csv (the answer key used by evals/run_evals.py)
 """
 
 import json
