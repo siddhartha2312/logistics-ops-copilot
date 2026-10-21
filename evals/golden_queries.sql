@@ -8,6 +8,9 @@
 --   Last quarter (LQ) = 2026-07-01 .. 2026-09-30
 --   Last month        = 2026-09-01 .. 2026-09-30
 -- Weeks run Sunday-Saturday (week_start = the Sunday).
+--
+-- "Check:" lists the columns that ARE the answer. The eval compares only those.
+-- "a|b" means either column is accepted (e.g. shipper_id or name).
 -- Actual volume = packages picked up on truck_runs.run_date, excluding
 -- Cancelled shipments. Attainment only on days that have a forecast.
 -- =====================================================================
@@ -16,6 +19,7 @@
 -- ---------------------------------------------------------------------
 -- E1. How many shipments were cancelled last quarter?
 -- Assumption: "last quarter" applied to created_date.
+-- Check: cancelled_shipments
 -- ---------------------------------------------------------------------
 SELECT COUNT(*) AS cancelled_shipments
 FROM shipments
@@ -25,6 +29,7 @@ WHERE status = 'Cancelled'
 
 -- ---------------------------------------------------------------------
 -- E2. How many active shippers do we have per country?
+-- Check: active_shippers
 -- ---------------------------------------------------------------------
 SELECT country, COUNT(*) AS active_shippers
 FROM shippers
@@ -37,6 +42,7 @@ ORDER BY active_shippers DESC;
 -- E3. What % of UK shipments were held at customs?
 -- Assumption: all time; country = shipper's country.
 -- Expected (scenario 1): ~8%.
+-- Check: customs_hold_pct
 -- ---------------------------------------------------------------------
 SELECT
     COUNT(*) AS uk_shipments,
@@ -50,6 +56,7 @@ WHERE sh.country = 'UK';
 
 -- ---------------------------------------------------------------------
 -- E4. How many truck runs were ad-hoc in September 2026?
+-- Check: adhoc_runs
 -- ---------------------------------------------------------------------
 SELECT COUNT(*) AS adhoc_runs
 FROM truck_runs
@@ -59,6 +66,7 @@ WHERE is_adhoc = 1
 
 -- ---------------------------------------------------------------------
 -- E5. Which node has the highest daily pallet capacity?
+-- Check: node_id|city, daily_capacity_pallets
 -- ---------------------------------------------------------------------
 SELECT node_id, node_type, city, country, daily_capacity_pallets
 FROM nodes
@@ -73,6 +81,7 @@ LIMIT 1;
 -- counts undelivered as not on-time; cost per package includes the cost
 -- of wasted runs (true cost of the network).
 -- Expected (scenario 2): milkrun lower on-time AND lower cost/package.
+-- Check: on_time_pct, cost_per_package_eur
 -- ---------------------------------------------------------------------
 WITH lq_runs AS (
     SELECT run_id, run_type, cost_eur
@@ -108,6 +117,7 @@ JOIN ship sp ON sp.run_type = c.run_type;
 -- M2. What was our weekly attainment for FR shippers last quarter?
 -- Assumptions: weeks Sun-Sat; only weeks whose Sunday falls in LQ;
 -- unplanned volume (days with no forecast) excluded.
+-- Check: attainment_pct
 -- ---------------------------------------------------------------------
 WITH daily_actuals AS (
     SELECT s.shipper_id, date(tr.run_date) AS pickup_date,
@@ -142,6 +152,7 @@ ORDER BY week_start;
 -- Assumptions: quarter-level attainment = sum actual / sum forecast;
 -- min 500 forecast packages in the quarter to remove noise.
 -- Expected (scenario 4): planted over-forecasters near ~70%.
+-- Check: shipper_id|name, attainment_pct
 -- ---------------------------------------------------------------------
 WITH daily_actuals AS (
     SELECT s.shipper_id, date(tr.run_date) AS pickup_date,
@@ -174,6 +185,7 @@ LIMIT 10;
 -- ---------------------------------------------------------------------
 -- M4. Did any de-listed shipper have volume after being de-listed?
 -- Expected (scenario 8): zero rows.
+-- Check: (expect no rows)
 -- ---------------------------------------------------------------------
 SELECT sh.shipper_id, sh.name, sh.delisted_date,
        COUNT(s.shipment_id) AS shipments_after,
@@ -191,6 +203,7 @@ ORDER BY shipments_after DESC;
 -- M5. What was average truck utilisation by country last month?
 -- Assumptions: country = destination node's country; weighted
 -- utilisation (sum loaded / sum capacity); wasted runs included (0 loaded).
+-- Check: utilisation_pct
 -- ---------------------------------------------------------------------
 SELECT n.country,
        COUNT(*) AS runs,
@@ -207,6 +220,7 @@ ORDER BY utilisation_pct DESC;
 -- Assumptions: peak = 2025-11-28 (Black Friday) .. 2025-12-24;
 -- pallets received per node per run_date (arrival assumed same day).
 -- Expected (scenario 3): one node clearly over capacity.
+-- Check: node_id|city, days_over_capacity
 -- ---------------------------------------------------------------------
 WITH daily_pallets AS (
     SELECT node_id, date(run_date) AS d, SUM(pallets_loaded) AS pallets
@@ -232,6 +246,7 @@ ORDER BY days_over_capacity DESC;
 --   Wasted cost    = full cost_eur
 -- Multi-stop runs: cost split equally across stops.
 -- Expected (scenario 11): ~3 AMs dominate wasted cost.
+-- Check: account_manager, avoidable_cost_eur
 -- ---------------------------------------------------------------------
 WITH lq_runs AS (
     SELECT run_id, cost_eur, is_adhoc, run_outcome
@@ -271,6 +286,7 @@ LIMIT 10;
 --     by country?
 -- Unplanned = picked-up packages on a day with no forecast row.
 -- Expected (scenario 9): non-zero in each country.
+-- Check: country, unplanned_packages
 -- ---------------------------------------------------------------------
 WITH daily_actuals AS (
     SELECT s.shipper_id, date(tr.run_date) AS pickup_date,
@@ -302,6 +318,7 @@ ORDER BY unplanned_packages DESC;
 -- Assumptions: all time; weeks Sun-Sat; "consecutive" = consecutive
 -- forecast weeks for that shipper; min 50 forecast packages per week.
 -- Technique: gaps-and-islands with two ROW_NUMBERs.
+-- Check: shipper_id|name
 -- ---------------------------------------------------------------------
 WITH daily_actuals AS (
     SELECT s.shipper_id, date(tr.run_date) AS pickup_date,
@@ -364,6 +381,7 @@ ORDER BY longest_streak_weeks DESC;
 --   an earlier stop caused.
 -- Late = actual_arrival_time > planned_arrival_time.
 -- Expected: a small group of 'slow loader' shippers dominates.
+-- Check: shipper_id|name
 -- ---------------------------------------------------------------------
 WITH milkruns AS (
     SELECT run_id,

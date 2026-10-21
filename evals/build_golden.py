@@ -29,8 +29,14 @@ def split_queries(text):
         if follow:
             question += " " + follow.group(1).strip()
         level = {"E": "easy", "M": "medium", "H": "hard"}[qid[0]]
+        # "-- Check: col_a, col_b|col_c" names the columns that ARE the answer.
+        check = re.search(r"-- Check: (.*)", block)
+        check_columns = check.group(1).strip() if check else ""
+        if check_columns.startswith("("):  # e.g. "(expect no rows)"
+            check_columns = ""
         sql = block.strip().rstrip(";")
-        queries.append({"id": qid, "difficulty": level, "question": question, "sql": sql})
+        queries.append({"id": qid, "difficulty": level, "question": question,
+                        "check_columns": check_columns, "sql": sql})
     return queries
 
 
