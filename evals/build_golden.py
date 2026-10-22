@@ -1,26 +1,33 @@
 """Run every golden query and save question + SQL + answer to a CSV.
 
-Run from the project root:  python evals/build_golden.py
-Output: evals/golden_questions.csv (the answer key used by evals/run_evals.py)
+Run from the project root:
+    python evals/build_golden.py                 # dev set
+    python evals/build_golden.py --set heldout   # held-out set
+Output: evals/golden_questions.csv or evals/heldout_questions.csv
+(the answer key used by evals/run_evals.py)
 """
 
 import json
 import re
 import sqlite3
+import sys
 
 import pandas as pd
 
-SQL_FILE = "evals/golden_queries.sql"
-OUT_FILE = "evals/golden_questions.csv"
+SETS = {
+    "dev": ("evals/golden_queries.sql", "evals/golden_questions.csv"),
+    "heldout": ("evals/heldout_queries.sql", "evals/heldout_questions.csv"),
+}
 DB_FILE = "logistics.db"
+LEVELS = {"E": "easy", "M": "medium", "H": "hard"}
 
 
 def split_queries(text):
-    """Split the .sql file into blocks, one per question (E1, M2, H3, ...)."""
-    blocks = re.split(r"\n(?=-- -{20,}\n-- [EMH]\d\.)", text)
+    """Split the .sql file into blocks, one per question (E1, M2, T3, ...)."""
+    blocks = re.split(r"\n(?=-- -{20,}\n-- [A-Z]\d+\.)", text)
     queries = []
     for block in blocks:
-        header = re.search(r"-- ([EMH]\d)\. (.*)", block)
+        header = re.search(r"-- ([A-Z]\d+)\. (.*)", block)
         if not header:
             continue  # the file's intro comment, not a query
         qid, question = header.group(1), header.group(2).strip()
@@ -28,24 +35,35 @@ def split_queries(text):
         follow = re.search(rf"-- {qid}\. .*\n--\s{{4,}}(.*)", block)
         if follow:
             question += " " + follow.group(1).strip()
-        level = {"E": "easy", "M": "medium", "H": "hard"}[qid[0]]
+        # Level comes from the ID letter (E/M/H) or a "-- Level:" line.
+        level_line = re.search(r"-- Level: (\w+)", block)
+        level = level_line.group(1) if level_line else LEVELS[qid[0]]
+        # "-- Expect: refusal" = the data can't answer it; there is no SQL.
+        expect_refusal = bool(re.search(r"-- Expect: refusal", block))
         # "-- Check: col_a, col_b|col_c" names the columns that ARE the answer.
         check = re.search(r"-- Check: (.*)", block)
         check_columns = check.group(1).strip() if check else ""
         if check_columns.startswith("("):  # e.g. "(expect no rows)"
             check_columns = ""
-        sql = block.strip().rstrip(";")
+        sql = "" if expect_refusal else block.strip().rstrip(";")
         queries.append({"id": qid, "difficulty": level, "question": question,
-                        "check_columns": check_columns, "sql": sql})
+                        "check_columns": check_columns, "expect_refusal": expect_refusal,
+                        "sql": sql})
     return queries
 
 
 def main():
+    set_name = sys.argv[sys.argv.index("--set") + 1] if "--set" in sys.argv else "dev"
+    sql_file, out_file = SETS[set_name]
     conn = sqlite3.connect(DB_FILE)
-    queries = split_queries(open(SQL_FILE).read())
+    queries = split_queries(open(sql_file).read())
 
     rows = []
     for q in queries:
+        if q["expect_refusal"]:
+            rows.append({**q, "answer_rows": 0, "answer_json": "[]"})
+            print(f"{q['id']:3s} {q['difficulty']:6s} refusal    {q['question'][:60]}")
+            continue
         result = pd.read_sql(q["sql"], conn)
         rows.append(
             {
@@ -57,8 +75,8 @@ def main():
         )
         print(f"{q['id']:3s} {q['difficulty']:6s} {len(result):4d} rows  {q['question'][:60]}")
 
-    pd.DataFrame(rows).to_csv(OUT_FILE, index=False)
-    print(f"\nSaved {len(rows)} golden questions to {OUT_FILE}")
+    pd.DataFrame(rows).to_csv(out_file, index=False)
+    print(f"\nSaved {len(rows)} {set_name} questions to {out_file}")
 
 
 if __name__ == "__main__":

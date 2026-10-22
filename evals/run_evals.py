@@ -1,8 +1,9 @@
 """Run the golden questions through the copilot and score the results.
 
 Usage (from the project root, with .venv active):
-    python evals/run_evals.py            # all 15 questions
-    python evals/run_evals.py E1 M1 H2   # only these (cheaper while testing)
+    python evals/run_evals.py                   # dev set (15 questions)
+    python evals/run_evals.py E1 M1 H2          # only these (cheaper while testing)
+    python evals/run_evals.py --set heldout     # held-out set (10 questions)
 
 Output:
     - one line per question as it runs
@@ -25,13 +26,19 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from copilot import DB_FILE, MODEL, ask, build_system_prompt, make_client  # noqa: E402
 from compare import compare_results  # noqa: E402
 
-GOLDEN_FILE = PROJECT_ROOT / "evals" / "golden_questions.csv"
+GOLDEN_FILES = {
+    "dev": PROJECT_ROOT / "evals" / "golden_questions.csv",
+    "heldout": PROJECT_ROOT / "evals" / "heldout_questions.csv",
+}
 RESULTS_DIR = PROJECT_ROOT / "evals" / "results"
 
 
-def load_golden(only_ids):
+def load_golden(set_name, only_ids):
     """Read the golden questions. keep_default_na=False keeps empty text as ''."""
-    golden = pd.read_csv(GOLDEN_FILE, keep_default_na=False)
+    golden = pd.read_csv(GOLDEN_FILES[set_name], keep_default_na=False)
+    if "expect_refusal" not in golden.columns:
+        golden["expect_refusal"] = False
+    golden["expect_refusal"] = golden["expect_refusal"].astype(str) == "True"
     if only_ids:
         golden = golden[golden["id"].isin(only_ids)]
     return golden
@@ -48,6 +55,18 @@ def evaluate_one(client, conn, system_prompt, row):
 
     record.update({"retried": out["retried"], "cost_usd": out["cost"],
                    "seconds": out["seconds"], "ai_sql": out["sql"]})
+
+    # The data can't answer this question: pass only if no numbers came back.
+    if row["expect_refusal"]:
+        if not out["ok"]:
+            return {**record, "passed": True, "ai_answer": "",
+                    "reason": f"refusal expected, no answer returned ({out['error'][:60]})"}
+        if out["result"].empty:
+            return {**record, "passed": True, "ai_answer": out["answer"],
+                    "reason": "refusal expected, empty result"}
+        return {**record, "passed": False, "ai_answer": out["answer"],
+                "reason": f"refusal expected, but answered with {len(out['result'])} rows"}
+
     if not out["ok"]:
         return {**record, "passed": False, "reason": f"SQL failed: {out['error']}", "ai_answer": ""}
 
@@ -56,12 +75,12 @@ def evaluate_one(client, conn, system_prompt, row):
     return {**record, "passed": passed, "reason": reason, "ai_answer": out["answer"]}
 
 
-def print_summary(report):
+def print_summary(report, set_name):
     """Score overall and by difficulty, plus cost and time."""
     total = len(report)
     passed = int(report["passed"].sum())
     print("\n" + "=" * 60)
-    print(f"SCORE: {passed}/{total} = {100 * passed / total:.0f}%   (model: {MODEL})")
+    print(f"SCORE ({set_name}): {passed}/{total} = {100 * passed / total:.0f}%   (model: {MODEL})")
     for level in ["easy", "medium", "hard"]:
         part = report[report["difficulty"] == level]
         if len(part):
@@ -74,13 +93,19 @@ def print_summary(report):
 
 
 def main():
-    only_ids = sys.argv[1:]  # e.g. ["E1", "M1"]; empty = all
+    args = sys.argv[1:]
+    set_name = "dev"
+    if "--set" in args:
+        i = args.index("--set")
+        set_name = args[i + 1]
+        args = args[:i] + args[i + 2:]
+    only_ids = args  # e.g. ["E1", "M1"]; empty = all
     client = make_client()
     conn = sqlite3.connect(f"file:{PROJECT_ROOT / DB_FILE}?mode=ro", uri=True)
     system_prompt = build_system_prompt(conn)
 
-    golden = load_golden(only_ids)
-    print(f"Running {len(golden)} golden questions with {MODEL}...\n")
+    golden = load_golden(set_name, only_ids)
+    print(f"Running {len(golden)} {set_name} questions with {MODEL}...\n")
 
     records = []
     for _, row in golden.iterrows():
@@ -90,11 +115,11 @@ def main():
         print(f"{rec['id']:3s} {mark}  {rec['seconds']:5.1f}s  {rec['reason']}")
 
     report = pd.DataFrame(records)
-    print_summary(report)
+    print_summary(report, set_name)
 
     RESULTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out_file = RESULTS_DIR / f"eval_{stamp}.csv"
+    out_file = RESULTS_DIR / f"eval_{set_name}_{stamp}.csv"
     report.to_csv(out_file, index=False)
     print(f"\nReport saved: {out_file.relative_to(PROJECT_ROOT)}")
 
