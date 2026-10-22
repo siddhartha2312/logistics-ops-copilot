@@ -10,7 +10,7 @@ Deliberately ignored, because they don't change the business answer:
 - percent vs fraction (87.8 vs 0.878)
 - extra rows (AI listed all 25 AMs; golden kept the top 10)
 
-Known limits of v1:
+Known limits:
 - a wrong query could match by coincidence
 - "top 10" questions accept a longer list, so ranking cut-offs aren't checked
 """
@@ -27,17 +27,25 @@ def numbers_match(a, b):
 def numeric_column_found(golden_values, ai_values):
     """True if every golden number appears in the AI column (each used once).
 
+    Both lists are sorted and matched in order. Matching in the original order
+    can fail when many values are close together: an AI value that fits two
+    golden values gets taken by the wrong one.
     Also tries the AI column x100 and /100, to accept 0.878 vs 87.8.
     """
+    golden_sorted = sorted(golden_values)
     for scale in (1, 100, 0.01):
-        remaining = [v * scale for v in ai_values]
+        ai_sorted = sorted(v * scale for v in ai_values)
+        j = 0
         all_found = True
-        for g in golden_values:
-            match = next((v for v in remaining if numbers_match(v, g)), None)
-            if match is None:
+        for g in golden_sorted:
+            # skip AI values too small to match this (or any later) golden value
+            while j < len(ai_sorted) and ai_sorted[j] < g and not numbers_match(ai_sorted[j], g):
+                j += 1
+            if j < len(ai_sorted) and numbers_match(ai_sorted[j], g):
+                j += 1  # each AI value can match only one golden value
+            else:
                 all_found = False
                 break
-            remaining.remove(match)  # each AI value can match only one golden value
         if all_found:
             return True
     return False

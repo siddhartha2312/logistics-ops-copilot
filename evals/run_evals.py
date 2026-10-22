@@ -56,14 +56,12 @@ def evaluate_one(client, conn, system_prompt, row):
     record.update({"retried": out["retried"], "cost_usd": out["cost"],
                    "seconds": out["seconds"], "ai_sql": out["sql"]})
 
-    # The data can't answer this question: pass only if no numbers came back.
+    # The data can't answer this question: pass only if the copilot gave no answer.
+    # An empty table is still an answer ("none matched"), so it fails.
     if row["expect_refusal"]:
         if not out["ok"]:
             return {**record, "passed": True, "ai_answer": "",
                     "reason": f"refusal expected, no answer returned ({out['error'][:60]})"}
-        if out["result"].empty:
-            return {**record, "passed": True, "ai_answer": out["answer"],
-                    "reason": "refusal expected, empty result"}
         return {**record, "passed": False, "ai_answer": out["answer"],
                 "reason": f"refusal expected, but answered with {len(out['result'])} rows"}
 

@@ -1,0 +1,217 @@
+id,difficulty,question,retried,cost_usd,seconds,ai_sql,passed,reason,ai_answer
+T1,medium,List of shippers whose weekly volume stayed constant (within ±5%) in week 20 compared to last year.,False,0.0023304,14.708135000008042,"-- Week 20 = Sunday-start week labelled by its Sunday date:
+-- 2026: week_start 2026-05-10 (to 2026-05-16); 2025: week_start 2025-05-11 (to 2025-05-17)
+WITH this_wk AS (
+    SELECT s.shipper_id, SUM(s.packages) AS pk
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2026-05-10' AND '2026-05-16'
+    GROUP BY s.shipper_id
+),
+last_wk AS (
+    SELECT s.shipper_id, SUM(s.packages) AS pk
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2025-05-11' AND '2025-05-17'
+    GROUP BY s.shipper_id
+)
+SELECT sh.shipper_id,
+       sh.name,
+       l.pk AS last_year_packages,
+       COALESCE(t.pk, 0) AS this_year_packages,
+       ROUND(100.0 * COALESCE(t.pk, 0) / l.pk, 1) AS change_pct_of_last_year
+FROM last_wk l
+JOIN shippers sh ON sh.shipper_id = l.shipper_id
+LEFT JOIN this_wk t ON t.shipper_id = l.shipper_id
+WHERE l.pk > 0
+  AND COALESCE(t.pk, 0) BETWEEN 0.95 * l.pk AND 1.05 * l.pk
+ORDER BY sh.name;",False,not found: shipper_id|name,"**224 shippers** kept their weekly package volume within 5% of last year's level in week 20. This compares May 10-16, 2026 against May 11-17, 2025, with cancelled shipments excluded and only shippers who shipped packages in the 2025 week counted. Shippers that shipped nothing in 2026 that week are not included. The first shippers listed include Badoer-Gasperi SPA, which was unchanged at exactly 100.0%, and Anderson Group, which sits at the 105.0% upper limit."
+T2,medium,Which shippers had daily pallet counts greater than 5% of their node capacity in Feb 2026?,False,0.0018468,10.212707042010152,"WITH daily_shipper_node AS (
+    -- aggregate each shipper's pallets per destination node per pickup day before joining
+    SELECT s.shipper_id, tr.node_id, tr.run_date, SUM(s.pallets) AS shipper_pallets
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2026-02-01' AND '2026-02-28'
+    GROUP BY s.shipper_id, tr.node_id, tr.run_date
+)
+SELECT sh.shipper_id,
+       sh.name,
+       d.node_id,
+       d.run_date,
+       d.shipper_pallets,
+       n.daily_capacity_pallets,
+       ROUND(100.0 * d.shipper_pallets / n.daily_capacity_pallets, 1) AS pct_of_node_capacity
+FROM daily_shipper_node d
+JOIN nodes n    ON n.node_id = d.node_id
+JOIN shippers sh ON sh.shipper_id = d.shipper_id
+WHERE d.shipper_pallets > 0.05 * n.daily_capacity_pallets
+ORDER BY pct_of_node_capacity DESC, d.run_date;",True,all answer columns found,"Fifteen shippers had at least one day in February 2026 where their pallets to a single node exceeded 5% of that node's daily capacity. The highest were Campbell-Price 237 and Anderson, Robinson and Lee 216, both at 7.3% of N-UK-01's 150-pallet capacity, and Thomson, Wilkinson and Smith 20 shows up most often across the list. The figures cover truck runs dated 1–28 February 2026 and exclude cancelled shipments, with each shipper's pallets totalled per node per day."
+T3,hard,Node volume = total packages coming into a node that day. Show weekly forecast vs actual packages per node: how much the node was expecting vs how much it got.,False,0.0028350000000000003,21.603767999986303,"-- Node volume = packages of non-cancelled shipments on truck runs arriving at the node,
+-- by run_date. Weeks run Sunday to Saturday (labelled by week_start).
+-- Forecasts are per shipper, not per node, so each shipper's weekly forecast is
+-- allocated to nodes in proportion to that shipper's actual packages at each node that week.
+WITH sn AS (
+    -- shipper x node x pickup day, aggregated before any joins
+    SELECT tr.node_id, tr.run_date AS d, s.shipper_id, SUM(s.packages) AS pk
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+    GROUP BY tr.node_id, tr.run_date, s.shipper_id
+),
+snw AS (
+    -- shipper x node x week
+    SELECT node_id, shipper_id,
+           date(d, '-' || strftime('%w', d) || ' days') AS week_start,
+           SUM(pk) AS node_pk
+    FROM sn
+    GROUP BY node_id, shipper_id, week_start
+),
+sw AS (
+    -- shipper x week total actual across all nodes
+    SELECT shipper_id, week_start, SUM(node_pk) AS total_pk
+    FROM snw
+    GROUP BY shipper_id, week_start
+),
+fw AS (
+    -- shipper x week forecast
+    SELECT shipper_id,
+           date(forecast_date, '-' || strftime('%w', forecast_date) || ' days') AS week_start,
+           SUM(forecast_packages) AS fc
+    FROM forecasts
+    GROUP BY shipper_id, week_start
+),
+act AS (
+    -- node x week actual packages
+    SELECT node_id, week_start, SUM(node_pk) AS actual_pk
+    FROM snw
+    GROUP BY node_id, week_start
+),
+alloc AS (
+    -- node x week forecast, allocated from shipper forecasts by actual share
+    SELECT snw.node_id, snw.week_start,
+           SUM(fw.fc * 1.0 * snw.node_pk / sw.total_pk) AS forecast_pk
+    FROM snw
+    JOIN sw ON sw.shipper_id = snw.shipper_id AND sw.week_start = snw.week_start
+    JOIN fw ON fw.shipper_id = snw.shipper_id AND fw.week_start = snw.week_start
+    GROUP BY snw.node_id, snw.week_start
+)
+SELECT a.node_id,
+       a.week_start,
+       ROUND(COALESCE(al.forecast_pk, 0), 0) AS forecast_packages,
+       a.actual_pk AS actual_packages,
+       a.actual_pk - ROUND(COALESCE(al.forecast_pk, 0), 0) AS variance_packages
+FROM act a
+LEFT JOIN alloc al
+  ON al.node_id = a.node_id AND al.week_start = a.week_start
+ORDER BY a.node_id, a.week_start;",False,"refusal expected, but answered with 3680 rows","For node N-ES-01, actual packages came in below forecast in most weeks shown, with the largest shortfall of 447 packages in the week starting 2025-05-25 (5,914 actual vs. 6,361 forecast). The largest overage was 109 packages in the week starting 2025-09-28. The results cover non-cancelled shipments by truck-run date, in Sunday-to-Saturday weeks, from the week starting 2024-12-29 through the week starting 2025-12-07. Only the first 50 of 3,680 node-week rows are shown, so this covers N-ES-01 only, not every node. The forecast for each node is an allocation of each shipper's forecast based on that shipper's share of actual packages at the node, not a separate node-level forecast."
+T4,medium,List of nodes which were closed in Italy but open in Spain in July 2025.,False,0.0015230999999999999,10.13740662499913,"-- The schema has no open/closed status for nodes. This approximates ""closed"" as an Italian
+-- node with no truck runs in July 2025, and ""open"" as a Spanish node with at least one run.
+SELECT n.node_id, n.city, n.country, 'closed' AS july_2025_status
+FROM nodes n
+WHERE n.country = 'IT'
+  AND NOT EXISTS (
+        SELECT 1 FROM truck_runs tr
+        WHERE tr.node_id = n.node_id
+          AND tr.run_date BETWEEN '2025-07-01' AND '2025-07-31')
+UNION ALL
+SELECT n.node_id, n.city, n.country, 'open' AS july_2025_status
+FROM nodes n
+WHERE n.country = 'ES'
+  AND EXISTS (
+        SELECT 1 FROM truck_runs tr
+        WHERE tr.node_id = n.node_id
+          AND tr.run_date BETWEEN '2025-07-01' AND '2025-07-31')
+ORDER BY july_2025_status, node_id;",False,"golden has no rows, AI returned 10 rows","No Italian nodes matched the closed criterion, so the query returned no nodes closed in Italy. It did return 10 Spanish nodes that were open: Madrid, Barcelona, Valencia, Seville, Bilbao, Malaga, Zaragoza, Alicante, Murcia and Vigo. The data has no official open/closed status, so the query treated a node as open if it had at least one truck run from 1 to 31 July 2025, and as closed if it had none."
+T5,medium,Truck wastage: which country had the most wasted trucks in week 30 of 2026?,False,0.0012232,7.765974249996361,"SELECT n.country,
+       COUNT(*) AS wasted_trucks
+FROM truck_runs tr
+JOIN nodes n ON n.node_id = tr.node_id
+WHERE tr.run_outcome = 'wasted'
+  AND tr.run_date BETWEEN '2026-07-26' AND '2026-08-01'
+GROUP BY n.country
+ORDER BY wasted_trucks DESC
+LIMIT 1;",True,all answer columns found,"The UK had the most wasted trucks, with 16, from 26 July to 1 August 2026 (the dates covered by week 30). Only runs marked as wasted were counted, and the figure is for the UK alone. No other country appeared in the top result."
+T6,easy,Which trucks ran over their weight limit in Aug 2026?,False,0.0007082000000000001,3.593879124993691,"SELECT run_id,
+       run_date,
+       carrier,
+       node_id,
+       pallet_capacity,
+       pallets_loaded,
+       pallets_loaded - pallet_capacity AS pallets_over_capacity
+FROM truck_runs
+WHERE run_date BETWEEN '2026-08-01' AND '2026-08-31'
+  AND pallets_loaded > pallet_capacity
+ORDER BY pallets_over_capacity DESC, run_date;",True,"refusal expected, empty result","No truck runs in August 2026 were recorded as going over their pallet capacity. The check covered every run dated August 1 to August 31, 2026, and compared pallets loaded against each truck's pallet capacity. No runs matched, so there is no list of overweight trucks to report for that period."
+T7,easy,How many bank holidays are there in each country in the current calendar year?,False,0.0006929,3.1467754999903264,"SELECT country,
+       COUNT(*) AS bank_holidays
+FROM holidays
+WHERE strftime('%Y', holiday_date) = '2026'
+GROUP BY country
+ORDER BY country;",True,all answer columns found,"In 2026, the data records 10 bank holidays for Spain (ES), 11 for France (FR), 11 for Italy (IT), and 9 for the UK. The counts cover every holiday dated anywhere in calendar year 2026, with no other filters applied."
+T8,medium,"For any day in 2026, list date, shipper name, country, actual, forecast and gap, where the gap between actual and forecast is more than 200 packages.",False,0.0017539,9.960223041009158,"WITH daily_actual AS (
+    -- aggregate actual volume to shipper x pickup day BEFORE joining (no fan-out)
+    SELECT s.shipper_id, tr.run_date AS pickup_date, SUM(s.packages) AS actual_packages
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2026-01-01' AND '2026-12-31'
+    GROUP BY s.shipper_id, tr.run_date
+)
+SELECT f.forecast_date AS date,
+       sh.name AS shipper_name,
+       sh.country AS country,
+       COALESCE(a.actual_packages, 0) AS actual,
+       f.forecast_packages AS forecast,
+       COALESCE(a.actual_packages, 0) - f.forecast_packages AS gap
+FROM forecasts f                      -- start from the forecast side
+JOIN shippers sh ON sh.shipper_id = f.shipper_id
+LEFT JOIN daily_actual a
+  ON a.shipper_id = f.shipper_id AND a.pickup_date = f.forecast_date
+WHERE f.forecast_date BETWEEN '2026-01-01' AND '2026-12-31'
+  AND ABS(COALESCE(a.actual_packages, 0) - f.forecast_packages) > 200
+ORDER BY date, shipper_name;",False,not found: gap,"The query found 122 shipper-days in 2026 where actual packages differed from the forecast by more than 200 packages, counting cancelled shipments as excluded. The first 50 run from 5 January to 25 February, and each shows zero actual packages against a forecast of 201 to 257 packages, which means forecast volume that never appeared as shipments. I can't tell from the 72 rows not shown whether they follow the same pattern."
+T9,hard,Create the ADV of each shipper for Jul 2026. Avg Daily Volume = total period volume / active days in the period. Active day = the shipper sent some volume and the forecast was non-zero.,False,0.0018323,10.954960375005612,"WITH daily_actual AS (
+    -- actual volume per shipper x pickup day for July 2026, aggregated before joining
+    SELECT s.shipper_id, tr.run_date AS pickup_date, SUM(s.packages) AS actual_packages
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2026-07-01' AND '2026-07-31'
+    GROUP BY s.shipper_id, tr.run_date
+),
+period_volume AS (
+    SELECT shipper_id, SUM(actual_packages) AS total_volume
+    FROM daily_actual
+    GROUP BY shipper_id
+),
+active_days AS (
+    -- active day = forecast row with non-zero forecast AND some actual volume that day
+    SELECT f.shipper_id, COUNT(*) AS active_days
+    FROM forecasts f
+    JOIN daily_actual a
+      ON a.shipper_id = f.shipper_id
+     AND a.pickup_date = f.forecast_date
+    WHERE f.forecast_date BETWEEN '2026-07-01' AND '2026-07-31'
+      AND f.forecast_packages > 0
+      AND a.actual_packages > 0
+    GROUP BY f.shipper_id
+)
+SELECT p.shipper_id,
+       p.total_volume,
+       COALESCE(d.active_days, 0) AS active_days,
+       ROUND(1.0 * p.total_volume / NULLIF(d.active_days, 0), 1) AS adv
+FROM period_volume p
+LEFT JOIN active_days d ON d.shipper_id = p.shipper_id
+ORDER BY adv DESC;",False,not found: adv,"Each of the 928 shippers has an Average Daily Volume (ADV) for July 2026, sorted highest first. S0574 is the top shipper at 219.7 packages per active day, and the first 50 shown range from 219.7 down to 171.9. The figures count non-cancelled shipments picked up July 1–31, 2026, divided by each shipper's active days, where a day counts only if the shipper had a non-zero forecast and sent packages that day."
+T10,easy,"List of shipper id, name and AM of shippers dropping packages in Liverpool in the current year.",False,0.0012395000000000002,7.459016959008295,"SELECT DISTINCT sh.shipper_id, sh.name, sh.account_manager
+FROM shipments s
+JOIN nodes n ON n.node_id = s.node_id
+JOIN truck_runs tr ON tr.run_id = s.run_id
+JOIN shippers sh ON sh.shipper_id = s.shipper_id
+WHERE n.city = 'Liverpool'
+  AND s.status <> 'Cancelled'
+  AND strftime('%Y', tr.run_date) = '2026'
+ORDER BY sh.shipper_id;",True,all answer columns found,"In 2026, 223 shippers dropped packages in Liverpool, excluding cancelled shipments. The list gives each shipper's ID, name and account manager, with the first is Griffiths, Cox and Smith 1 (S0001), managed by Jake Jones. Only the first 50 of the 223 are shown here, so the full list needs to be pulled to see the rest."

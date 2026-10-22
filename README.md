@@ -99,38 +99,46 @@ Generate it with `python generate_data.py` (reproducible, seed 42).
 
 ## Results
 
-Evaluated on 15 golden questions with verified answers ([`evals/`](evals/)).
+Evaluated on two question sets with verified answers ([`evals/`](evals/)).
 A question passes if the copilot's result contains the correct answer values,
-regardless of column names, row order or rounding. Both versions are scored against
-the same answer key ([change log](evals/golden_changes.md)).
+regardless of column names, row order or rounding.
 
-| Version | What changed | Score | Easy | Medium | Hard | Cost / question | Avg time |
-|---|---|---|---|---|---|---|---|
-| v0 | Schema + allowed values only | **5 / 15 (33%)** | 4 / 5 | 1 / 5 | 0 / 5 | $0.0009 | 6.6 s |
-| v1 | + business glossary + worked examples + timeouts | **15 / 15 (100%)**, 3 runs out of 3 | 5 / 5 | 5 / 5 | 5 / 5 | $0.0012 | 7.2–8.2 s |
+- **Dev set (15 questions):** used to find failures and write the glossary.
+- **Held-out set (10 questions):** written separately by the domain owner, never used
+  to tune the copilot. Two ask for data that does not exist, to test whether the
+  copilot says so.
 
-**What the v0 failures showed** ([full analysis](evals/baseline_analysis.md)):
-7 of 9 failures were business definitions, not SQL skill. The model wrote valid SQL
-but didn't know how this business defines on-time, attainment, utilisation or avoidable
-cost. The most dangerous failure returned no rows, which read as good news.
+| Version | What changed | Dev | Held-out | Cost / question | Avg time |
+|---|---|---|---|---|---|
+| v0 | Schema + allowed values only | 5 / 15 (33%) | – | $0.0009 | 6.6 s |
+| v1 | + business glossary + worked examples + timeouts | **15 / 15 (100%)**, 3 runs out of 3 | **5 / 10 (50%)** | $0.0012–0.0016 | 7–10 s |
 
-**What fixed them:** a glossary of agreed definitions and three worked SQL patterns.
-The examples deliberately use different questions from the evaluation set.
+All scores use the current answer key and judge ([change log](evals/golden_changes.md)).
 
-**Limits of this result:**
-- 100% is on the development set: the glossary was written from these questions'
-  failures, so accuracy on new questions will be lower. A held-out set is next.
-- The slowest question once took 43 s (a slow query hit the 30 s timeout, then the retry
-  passed). Accuracy is stable across runs; latency is not yet.
+**What the v0 failures showed** ([analysis](evals/baseline_analysis.md)):
+7 of 9 failures were business definitions, not SQL skill. A glossary of agreed
+definitions and three worked SQL patterns fixed all of them on the dev set.
+
+**What the held-out set showed** ([analysis](evals/heldout_results.md)):
+- **3 of 5 failures: the copilot never says "I can't answer".** Asked which trucks were
+  over their weight limit (there is no weight data), it used pallet capacity instead
+  and answered "none": a confident, wrong all-clear.
+- **2 of 5: terms the glossary doesn't define** ("week 20", days with volume but no
+  forecast).
+- No failure was bad SQL, and every definition already in the glossary was applied
+  correctly.
+
+The gap between 100% and 50% is the point of the held-out set: dev accuracy measures
+how well the copilot was fitted, held-out accuracy estimates what a user would see.
 
 ## Next
 
 | Change | Targets |
 |---|---|
-| Held-out questions (~50 total), never used to write the glossary | Honest accuracy on unseen questions |
+| Let the copilot answer "this data isn't available" and state any substitute it uses | Held-out honesty failures |
+| Extend the glossary, then write a fresh held-out set | Undefined terms; honest re-measurement |
 | Semantic layer: SQL views for on-time, attainment, utilisation, avoidable cost | Deterministic definitions; faster, simpler queries |
 | SQL guardrails: SELECT-only check, row limit | Safety |
-| Answers state their assumptions; ambiguous questions get a clarifying question | Trust |
 | Compare models on accuracy, cost and latency | Evidence-based model choice |
 
 ## Run it
@@ -145,9 +153,11 @@ pip install -r requirements.txt
 
 cp .env.example .env          # then add your ANTHROPIC_API_KEY
 python generate_data.py       # builds logistics.db (~1 min)
+python evals/build_golden.py && python evals/build_golden.py --set heldout
 
 python copilot.py "Which carrier had the most late arrivals in September 2026?"
-python evals/run_evals.py     # score against the golden questions
+python evals/run_evals.py                 # score the dev set
+python evals/run_evals.py --set heldout   # score the held-out set
 ```
 
 ## Repository
@@ -159,13 +169,15 @@ docs/data_model.md      tables, business definitions, planted scenarios
 docs/glossary.md        agreed metric definitions, sent with every question
 docs/sql_examples.md    worked SQL patterns, sent with every question
 evals/
-  golden_queries.sql    ground-truth SQL for each question
+  golden_queries.sql    ground-truth SQL for the dev questions
+  heldout_queries.sql   ground-truth SQL for the held-out questions
   build_golden.py       runs it and stores the answers
   compare.py            decides whether a result matches the golden answer
   run_evals.py          runs all questions through the copilot and scores them
   rescore.py            re-scores a saved run against the current answer key
   baseline_analysis.md  v0 results and failure analysis
   v1_results.md         v1 results and what changed
+  heldout_results.md    v1 on the held-out set and failure analysis
   golden_changes.md     log of every answer-key change
 ```
 
