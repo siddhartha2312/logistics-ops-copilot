@@ -1,0 +1,29 @@
+id,difficulty,question,retried,cost_usd,seconds,ai_sql,passed,reason,ai_answer
+H3,hard,"How much unplanned volume did we get on bank holidays in 2026, by country?",True,0.0024028,42.633244249998825,"WITH hol AS (
+    SELECT country, holiday_date
+    FROM holidays
+    WHERE holiday_date BETWEEN '2026-01-01' AND '2026-12-31'
+),
+day_actual AS (
+    -- aggregate only on holiday dates, before joining
+    SELECT s.shipper_id, tr.run_date AS pickup_date, SUM(s.packages) AS actual_packages
+    FROM truck_runs tr
+    JOIN shipments s ON s.run_id = tr.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date IN (SELECT holiday_date FROM hol)
+    GROUP BY s.shipper_id, tr.run_date
+)
+SELECT sh.country,
+       SUM(a.actual_packages) AS unplanned_packages,
+       COUNT(*) AS unplanned_shipper_days
+FROM day_actual a
+JOIN shippers sh ON sh.shipper_id = a.shipper_id
+JOIN hol h
+  ON h.country = sh.country
+ AND h.holiday_date = a.pickup_date
+LEFT JOIN forecasts f
+  ON f.shipper_id = a.shipper_id
+ AND f.forecast_date = a.pickup_date
+WHERE f.shipper_id IS NULL
+GROUP BY sh.country
+ORDER BY sh.country;",True,all answer columns found,"Between 1 January and 31 December 2026, unplanned volume on bank holidays was 1,763 packages in Spain (44 shipper-days), 3,402 in France (82), 2,285 in Italy (54), and 2,900 in the UK (66). Only non-cancelled shipments are counted, and a shipper-day is unplanned when that shipper had no forecast for that holiday date. Each count is one shipper's packages on one holiday."

@@ -16,15 +16,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 import pandas as pd
-from dotenv import load_dotenv
 
 # copilot.py lives one folder up; make it importable from here.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from copilot import DB_FILE, MODEL, ask, build_system_prompt  # noqa: E402
+from copilot import DB_FILE, MODEL, ask, build_system_prompt, make_client  # noqa: E402
 from compare import compare_results  # noqa: E402
 
 GOLDEN_FILE = PROJECT_ROOT / "evals" / "golden_questions.csv"
@@ -77,8 +75,7 @@ def print_summary(report):
 
 def main():
     only_ids = sys.argv[1:]  # e.g. ["E1", "M1"]; empty = all
-    load_dotenv(PROJECT_ROOT / ".env")
-    client = anthropic.Anthropic()
+    client = make_client()
     conn = sqlite3.connect(f"file:{PROJECT_ROOT / DB_FILE}?mode=ro", uri=True)
     system_prompt = build_system_prompt(conn)
 

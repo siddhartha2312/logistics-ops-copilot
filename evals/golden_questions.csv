@@ -19,8 +19,9 @@ GROUP BY country
 ORDER BY active_shippers DESC",4,"[{""country"": ""IT"", ""active_shippers"": 242}, {""country"": ""ES"", ""active_shippers"": 242}, {""country"": ""FR"", ""active_shippers"": 235}, {""country"": ""UK"", ""active_shippers"": 233}]"
 E3,easy,What % of UK shipments were held at customs?,customs_hold_pct,"-- ---------------------------------------------------------------------
 -- E3. What % of UK shipments were held at customs?
--- Assumption: all time; country = shipper's country.
--- Expected (scenario 1): ~8%.
+-- Assumption: all time; country = shipper's country; denominator =
+-- non-cancelled shipments (changed 2026-10-22, see evals/golden_changes.md).
+-- Expected (scenario 1): ~8.5%.
 -- Check: customs_hold_pct
 -- ---------------------------------------------------------------------
 SELECT
@@ -30,7 +31,8 @@ SELECT
           / COUNT(*), 2) AS customs_hold_pct
 FROM shipments s
 JOIN shippers sh ON sh.shipper_id = s.shipper_id
-WHERE sh.country = 'UK'",1,"[{""uk_shipments"": 105259, ""customs_holds"": 8652, ""customs_hold_pct"": 8.22}]"
+WHERE sh.country = 'UK'
+  AND s.status <> 'Cancelled'",1,"[{""uk_shipments"": 101295, ""customs_holds"": 8652, ""customs_hold_pct"": 8.54}]"
 E4,easy,How many truck runs were ad-hoc in September 2026?,adhoc_runs,"-- ---------------------------------------------------------------------
 -- E4. How many truck runs were ad-hoc in September 2026?
 -- Check: adhoc_runs

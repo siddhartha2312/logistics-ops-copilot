@@ -1,16 +1,19 @@
-"""Logistics Ops Copilot v0: turn a business question into SQL.
+"""Logistics Ops Copilot: turn a business question into SQL and a plain-English answer.
 
 Usage (from the project root, with .venv active):
     python copilot.py "How many shipments were cancelled last quarter?"
 
 Flow: question -> SQL (Claude) -> run on a read-only database
       -> one retry if the SQL fails -> plain-English answer (Claude).
+Context sent with every question: schema, allowed values, docs/glossary.md,
+docs/sql_examples.md.
 """
 
 import re
 import sqlite3
 import sys
 import time
+from pathlib import Path
 
 import anthropic
 import pandas as pd
@@ -18,7 +21,13 @@ from dotenv import load_dotenv
 
 MODEL = "claude-haiku-5-5"
 DB_FILE = "logistics.db"
-TODAY = "2026-10-19"  # frozen reference date, see docs/data_model.md
+DOCS_DIR = Path(__file__).resolve().parent / "docs"
+GLOSSARY_FILE = DOCS_DIR / "glossary.md"
+EXAMPLES_FILE = DOCS_DIR / "sql_examples.md"
+
+# Limits so a user never waits on a runaway query or a hanging API call.
+SQL_TIMEOUT_S = 30   # stop any single SQL query after this many seconds
+API_TIMEOUT_S = 60   # stop any single Claude call after this many seconds
 
 # USD per million tokens for MODEL (check the pricing page if you change model).
 PRICE_IN = 0.10
@@ -72,16 +81,21 @@ def get_allowed_values(conn):
 
 
 def build_system_prompt(conn):
-    """Instructions + database facts the model needs before any question."""
+    """Instructions + database facts + business definitions + worked examples."""
+    glossary = GLOSSARY_FILE.read_text()
+    examples = EXAMPLES_FILE.read_text()
     return f"""You are a SQL expert for a logistics company's SQLite database.
 Write ONE SQLite query that answers the user's question.
 
 Rules:
 - Use only the tables and columns listed below. Never invent a column.
 - Use only the exact category values listed below. They are case-sensitive.
+- Follow the business definitions below exactly. When the question uses a term
+  defined there (on-time, attainment, utilisation, avoidable cost, peak, week...),
+  use that definition, not your own.
+- The worked examples show the correct patterns. Reuse their structure.
 - This is SQLite: use date() and strftime(). There is no DATE_TRUNC or EXTRACT.
   Dates are stored as 'YYYY-MM-DD' text; timestamps as 'YYYY-MM-DD HH:MM:SS'.
-- Today's date is {TODAY}.
 - Read-only: write a SELECT (or WITH ... SELECT) query only.
 - Reply with only the SQL inside a ```sql code block. No explanation.
 
@@ -90,6 +104,12 @@ Schema:
 
 Allowed values:
 {get_allowed_values(conn)}
+
+Business definitions:
+{glossary}
+
+Worked examples:
+{examples}
 """
 
 
@@ -105,7 +125,7 @@ def ask_claude(client, system_prompt, messages):
     """Send a conversation to Claude. Return the reply text, usage and cost."""
     response = client.messages.create(
         model=MODEL,
-        max_tokens=2000,  # room for thinking + a long query
+        max_tokens=4000,  # room for thinking + a long query (2000 cut off H4)
         system=system_prompt,
         messages=messages,
     )
@@ -125,9 +145,33 @@ def question_to_sql(client, system_prompt, question):
     return extract_sql(reply_text), usage, cost
 
 
-def run_sql(conn, sql):
-    """Run the SQL on the read-only database and return the result as a table."""
-    return pd.read_sql(sql, conn)
+def run_sql(conn, sql, timeout_s=SQL_TIMEOUT_S):
+    """Run the SQL on the read-only database and return the result as a table.
+
+    SQLite has no timeout setting, so a progress handler checks the clock every
+    10,000 steps and aborts the query once the deadline has passed.
+    """
+    deadline = time.monotonic() + timeout_s
+    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10_000)
+    try:
+        return pd.read_sql(sql, conn)
+    except Exception as error:
+        if "interrupted" in str(error):
+            # Worded for the model: this message is sent back for the one retry.
+            raise TimeoutError(
+                f"The query was too slow and was stopped after {timeout_s}s. "
+                "Rewrite it to be efficient: join on keys, filter dates early, "
+                "aggregate before joining."
+            ) from error
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
+def make_client():
+    """Claude client with a per-call timeout (reads ANTHROPIC_API_KEY from .env)."""
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+    return anthropic.Anthropic(timeout=API_TIMEOUT_S, max_retries=2)
 
 
 def fix_sql(client, system_prompt, question, bad_sql, error):
@@ -185,8 +229,7 @@ def main():
         sys.exit(1)
     question = sys.argv[1]
 
-    load_dotenv()
-    client = anthropic.Anthropic()
+    client = make_client()
     conn = sqlite3.connect(f"file:{DB_FILE}?mode=ro", uri=True)  # read-only: AI-written SQL can't change data
     system_prompt = build_system_prompt(conn)
 

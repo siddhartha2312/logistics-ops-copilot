@@ -52,10 +52,10 @@ verify any number.
 
 ```mermaid
 flowchart LR
-    Q["Business question"] --> P["Prompt:<br/>schema + allowed values<br/>+ reference date"]
+    Q["Business question"] --> P["Prompt:<br/>schema + allowed values<br/>+ business glossary<br/>+ worked SQL examples"]
     P --> L1["LLM call 1:<br/>write SQL"]
-    L1 --> DB[("Read-only<br/>SQLite")]
-    DB -->|"SQL error"| FIX["LLM: fix SQL<br/>(one retry)"]
+    L1 --> DB[("Read-only<br/>SQLite<br/>30 s timeout")]
+    DB -->|"SQL error<br/>or timeout"| FIX["LLM: fix SQL<br/>(one retry)"]
     FIX --> DB
     DB -->|"result table"| L2["LLM call 2:<br/>plain-English answer"]
     L2 --> A["Answer + result<br/>+ SQL + cost"]
@@ -63,7 +63,13 @@ flowchart LR
 
 - **Context from the database itself:** table schemas and the exact values of category
   columns are read at runtime, so the prompt never goes stale.
+- **Business glossary:** the agreed meaning of every metric (on-time, attainment,
+  utilisation, avoidable cost, Sunday–Saturday weeks, pickup date) is sent with every
+  question ([`docs/glossary.md`](docs/glossary.md)), with three worked SQL patterns
+  ([`docs/sql_examples.md`](docs/sql_examples.md)).
 - **Read-only connection:** AI-written SQL cannot change data, whatever the prompt says.
+- **Time limits:** any query is stopped after 30 s and any model call after 60 s.
+  The timeout message tells the model how to rewrite the query efficiently for the retry.
 - **Bounded self-correction:** a failing query is sent back to the model with the error,
   once. If it still fails, the user gets "I couldn't answer this", not a guess.
 - **Two calls, two jobs:** one writes SQL; the other explains the result and may only
@@ -95,31 +101,37 @@ Generate it with `python generate_data.py` (reproducible, seed 42).
 
 Evaluated on 15 golden questions with verified answers ([`evals/`](evals/)).
 A question passes if the copilot's result contains the correct answer values,
-regardless of column names, row order or rounding.
+regardless of column names, row order or rounding. Both versions are scored against
+the same answer key ([change log](evals/golden_changes.md)).
 
-| Version | Overall | Easy | Medium | Hard | Cost / question | Avg time |
-|---|---|---|---|---|---|---|
-| v0 (schema only) | **6 / 15 (40%)** | 5 / 5 | 1 / 5 | 0 / 5 | $0.0009 | 6.6 s |
+| Version | What changed | Score | Easy | Medium | Hard | Cost / question | Avg time |
+|---|---|---|---|---|---|---|---|
+| v0 | Schema + allowed values only | **5 / 15 (33%)** | 4 / 5 | 1 / 5 | 0 / 5 | $0.0009 | 6.6 s |
+| v1 | + business glossary + worked examples + timeouts | **15 / 15 (100%)**, 3 runs out of 3 | 5 / 5 | 5 / 5 | 5 / 5 | $0.0012 | 7.2–8.2 s |
 
-**What fails, and why** (full analysis: [`evals/baseline_analysis.md`](evals/baseline_analysis.md)):
+**What the v0 failures showed** ([full analysis](evals/baseline_analysis.md)):
+7 of 9 failures were business definitions, not SQL skill. The model wrote valid SQL
+but didn't know how this business defines on-time, attainment, utilisation or avoidable
+cost. The most dangerous failure returned no rows, which read as good news.
 
-- **7 of 9 failures are business definitions, not SQL skill.** The model writes valid
-  SQL, but it doesn't know that on-time is measured against all non-cancelled shipments,
-  that attainment uses pickup date and Sunday–Saturday weeks, or that avoidable cost
-  includes the ad-hoc truck premium.
-- **The most dangerous failure returned no rows.** "No shipper causes late milkruns"
-  reads as good news, not as a wrong join.
-- **Results vary between runs** for the same question, so evals are re-run after every change.
+**What fixed them:** a glossary of agreed definitions and three worked SQL patterns.
+The examples deliberately use different questions from the evaluation set.
+
+**Limits of this result:**
+- 100% is on the development set: the glossary was written from these questions'
+  failures, so accuracy on new questions will be lower. A held-out set is next.
+- The slowest question once took 43 s (a slow query hit the 30 s timeout, then the retry
+  passed). Accuracy is stable across runs; latency is not yet.
 
 ## Next
 
 | Change | Targets |
 |---|---|
-| Business glossary + worked examples in the prompt | Definition and date-logic failures |
-| Semantic layer: SQL views for on-time, attainment, utilisation, avoidable cost | Makes definitions deterministic instead of relying on the model |
-| SQL guardrails: SELECT-only check, row limit, timeout | Safety |
+| Held-out questions (~50 total), never used to write the glossary | Honest accuracy on unseen questions |
+| Semantic layer: SQL views for on-time, attainment, utilisation, avoidable cost | Deterministic definitions; faster, simpler queries |
+| SQL guardrails: SELECT-only check, row limit | Safety |
 | Answers state their assumptions; ambiguous questions get a clarifying question | Trust |
-| Expand to 50 golden questions; compare models on accuracy, cost and latency | Evidence-based model choice |
+| Compare models on accuracy, cost and latency | Evidence-based model choice |
 
 ## Run it
 
@@ -144,12 +156,17 @@ python evals/run_evals.py     # score against the golden questions
 copilot.py              question → SQL → read-only run → answer
 generate_data.py        builds the synthetic network (seed 42)
 docs/data_model.md      tables, business definitions, planted scenarios
+docs/glossary.md        agreed metric definitions, sent with every question
+docs/sql_examples.md    worked SQL patterns, sent with every question
 evals/
   golden_queries.sql    ground-truth SQL for each question
   build_golden.py       runs it and stores the answers
   compare.py            decides whether a result matches the golden answer
   run_evals.py          runs all questions through the copilot and scores them
+  rescore.py            re-scores a saved run against the current answer key
   baseline_analysis.md  v0 results and failure analysis
+  v1_results.md         v1 results and what changed
+  golden_changes.md     log of every answer-key change
 ```
 
 ## License

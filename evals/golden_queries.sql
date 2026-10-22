@@ -40,8 +40,9 @@ ORDER BY active_shippers DESC;
 
 -- ---------------------------------------------------------------------
 -- E3. What % of UK shipments were held at customs?
--- Assumption: all time; country = shipper's country.
--- Expected (scenario 1): ~8%.
+-- Assumption: all time; country = shipper's country; denominator =
+-- non-cancelled shipments (changed 2026-10-22, see evals/golden_changes.md).
+-- Expected (scenario 1): ~8.5%.
 -- Check: customs_hold_pct
 -- ---------------------------------------------------------------------
 SELECT
@@ -51,7 +52,8 @@ SELECT
           / COUNT(*), 2) AS customs_hold_pct
 FROM shipments s
 JOIN shippers sh ON sh.shipper_id = s.shipper_id
-WHERE sh.country = 'UK';
+WHERE sh.country = 'UK'
+  AND s.status <> 'Cancelled';
 
 
 -- ---------------------------------------------------------------------
