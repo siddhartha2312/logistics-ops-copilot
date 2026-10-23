@@ -54,17 +54,24 @@ def evaluate_one(client, conn, system_prompt, row):
                 "retried": False, "cost_usd": 0.0, "seconds": 0.0, "ai_sql": "", "ai_answer": ""}
 
     record.update({"retried": out["retried"], "cost_usd": out["cost"],
-                   "seconds": out["seconds"], "ai_sql": out["sql"]})
+                   "seconds": out["seconds"], "ai_sql": out["sql"],
+                   "assumptions": " | ".join(out.get("assumptions", []))})
 
     # The data can't answer this question: pass only if the copilot gave no answer.
     # An empty table is still an answer ("none matched"), so it fails.
     if row["expect_refusal"]:
+        if out.get("cannot_answer"):
+            return {**record, "passed": True, "ai_answer": "",
+                    "reason": f"refused as expected: {out['error'][:80]}"}
         if not out["ok"]:
             return {**record, "passed": True, "ai_answer": "",
                     "reason": f"refusal expected, no answer returned ({out['error'][:60]})"}
         return {**record, "passed": False, "ai_answer": out["answer"],
                 "reason": f"refusal expected, but answered with {len(out['result'])} rows"}
 
+    if out.get("cannot_answer"):
+        return {**record, "passed": False, "ai_answer": "",
+                "reason": f"refused an answerable question: {out['error'][:80]}"}
     if not out["ok"]:
         return {**record, "passed": False, "reason": f"SQL failed: {out['error']}", "ai_answer": ""}
 

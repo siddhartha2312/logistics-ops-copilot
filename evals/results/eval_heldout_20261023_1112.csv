@@ -1,0 +1,124 @@
+id,difficulty,question,retried,cost_usd,seconds,ai_sql,assumptions,passed,reason,ai_answer
+T1,medium,List of shippers whose weekly volume stayed constant (within ±5%) in week 20 compared to last year.,False,0.0023393,13.765170291997492,"WITH wk AS (
+    SELECT s.shipper_id,
+           SUM(CASE WHEN tr.run_date BETWEEN '2026-05-17' AND '2026-05-23' THEN s.packages ELSE 0 END) AS vol_ty,
+           SUM(CASE WHEN tr.run_date BETWEEN '2025-05-18' AND '2025-05-24' THEN s.packages ELSE 0 END) AS vol_ly
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND (tr.run_date BETWEEN '2026-05-17' AND '2026-05-23'
+           OR tr.run_date BETWEEN '2025-05-18' AND '2025-05-24')
+    GROUP BY s.shipper_id
+)
+SELECT sh.shipper_id,
+       sh.name,
+       w.vol_ly AS packages_last_year,
+       w.vol_ty AS packages_this_year,
+       ROUND(100.0 * (w.vol_ty - w.vol_ly) / w.vol_ly, 1) AS change_pct
+FROM wk w
+JOIN shippers sh ON sh.shipper_id = w.shipper_id
+WHERE w.vol_ly > 0
+  AND w.vol_ty BETWEEN 0.95 * w.vol_ly AND 1.05 * w.vol_ly
+ORDER BY sh.shipper_id;","'Week 20' is read as the Sunday-start week numbered 20 in 2026 (%U numbering), i.e. week_start 2026-05-17 to 2026-05-23. ISO week 20 (Mon-based) would be 2026-05-11 to 2026-05-17 and was not used. | 'Last year' comparison week is 2025-05-18 to 2025-05-24, the same Sunday-start week 20 in 2025 (2026 week minus 364 days, so weekdays align). | Weekly volume = packages of non-cancelled shipments, grouped by truck_runs.run_date (pickup date), per the glossary. | 'Within ±5%' means this year's volume is between 95% and 105% of last year's volume (inclusive). | Shippers with zero volume last year are excluded because the percentage change is undefined. | All shippers are considered, including de-listed ones.",True,all answer columns found,"**212 shippers** had weekly package volume within 5% of last year's level for week 20 (Sunday-start week, 17–23 May 2026, compared with 18–24 May 2025), counting non-cancelled shipments by pickup date. Shippers with no volume last year are excluded, and de-listed shippers are included. The list shows the first 50 of these, for example Bailey-Parsons (S0164), which moved from 1,079 packages last year to 1,091 this year (+1.1%)."
+T2,medium,Which shippers had daily pallet counts greater than 5% of their node capacity in Feb 2026?,False,0.0020739,11.744525625006645,"WITH daily_shipper_pallets AS (
+    -- shipper pallets picked per destination node per pickup day (aggregate before joining)
+    SELECT rs.shipper_id,
+           tr.node_id,
+           tr.run_date,
+           SUM(rs.pallets_picked) AS shipper_pallets
+    FROM run_stops rs
+    JOIN truck_runs tr ON tr.run_id = rs.run_id
+    WHERE tr.run_date BETWEEN '2026-02-01' AND '2026-02-28'
+    GROUP BY rs.shipper_id, tr.node_id, tr.run_date
+)
+SELECT d.shipper_id,
+       sh.name AS shipper_name,
+       d.node_id,
+       d.run_date,
+       d.shipper_pallets,
+       n.daily_capacity_pallets,
+       ROUND(100.0 * d.shipper_pallets / n.daily_capacity_pallets, 1) AS pct_of_node_capacity
+FROM daily_shipper_pallets d
+JOIN nodes n ON n.node_id = d.node_id
+JOIN shippers sh ON sh.shipper_id = d.shipper_id
+WHERE d.shipper_pallets > 0.05 * n.daily_capacity_pallets
+ORDER BY sh.name, d.run_date, d.node_id;","Shipper daily pallets = SUM(run_stops.pallets_picked) per shipper, destination node (truck_runs.node_id) and pickup day (truck_runs.run_date), since run_stops holds the shipper's own pallets per run. | 'Node capacity' = nodes.daily_capacity_pallets of the node the shipper's pallets were trucked to. | Feb 2026 = run_date 2026-02-01 to 2026-02-28 (pickup date). | 'Greater than 5%' is a strict comparison: shipper pallets > 0.05 × daily capacity, evaluated per shipper-node-day. | Result is one row per shipper, node and day that breached the threshold; distinct shipper names can be read from the output.",True,all answer columns found,"Fifteen shippers had at least one day in February 2026 where their pallets, trucked to one node, exceeded 5% of that node's daily capacity. Thomson, Wilkinson and Smith breached the threshold most often, on 10 days, all at N-UK-01. In total, the result lists 37 shipper-node-day combinations, counted by pickup date."
+T3,hard,Node volume = total packages coming into a node that day. Show weekly forecast vs actual packages per node: how much the node was expecting vs how much it got.,False,0.0007754000000000001,3.2772878339892486,,,True,"refused as expected: The forecasts table is keyed only by shipper_id and forecast_date, with no node ",
+T4,medium,List of nodes which were closed in Italy but open in Spain in July 2025.,False,0.0006521000000000001,2.0473601249977946,,,False,"refused an answerable question: The schema has no open/closed status for nodes. The nodes table holds node_id, n",
+T5,medium,Truck wastage: which country had the most wasted trucks in week 30 of 2026?,False,0.0014601000000000002,8.192639917004271,"SELECT n.country,
+       COUNT(*) AS wasted_trucks
+FROM truck_runs tr
+JOIN nodes n
+  ON n.node_id = tr.node_id
+WHERE tr.run_outcome = 'wasted'
+  AND tr.run_date BETWEEN '2026-07-19' AND '2026-07-25'
+GROUP BY n.country
+ORDER BY wasted_trucks DESC;","Week 30 of 2026 is the Sunday-to-Saturday week starting 2026-07-19 (week 1 is the week containing 1 January 2026, which starts 2025-12-28). The glossary does not define week numbers, so this is my interpretation. | Wasted trucks are counted by pickup date (truck_runs.run_date), per the glossary. | Country is the destination node's country (truck_runs.node_id to nodes.country), per the glossary's truck-metric rule.",True,all answer columns found,"Italy (IT) and France (FR) tied for the most wasted trucks in week 30 of 2026 (19–25 July), with 7 each. The United Kingdom (UK) and Spain (ES) each had 4, and no other countries had wasted trucks in that period."
+T6,easy,Which trucks ran over their weight limit in Aug 2026?,False,0.0006402000000000001,2.6662202500010608,,,True,refused as expected: The schema has no weight data. truck_runs holds pallet_capacity and pallets_load,
+T7,easy,How many bank holidays are there in each country in the current calendar year?,False,0.0008343000000000001,3.9047140830080025,"SELECT country,
+       COUNT(*) AS bank_holidays
+FROM holidays
+WHERE holiday_date BETWEEN '2026-01-01' AND '2026-12-31'
+GROUP BY country
+ORDER BY country;","Current calendar year is 2026, based on today's date of 2026-10-19; the count covers the full year 2026-01-01 to 2026-12-31, including dates after today. | Every row in the holidays table is treated as a bank holiday, because the table has no holiday type column to filter on.",True,all answer columns found,"For 2026 (the full year, 1 January to 31 December, counting every holiday listed in the data), the countries break down as follows: France and Italy have the most with 11 each, Spain has 10, and the UK has 9. The figures cover the full calendar year, including dates that have not yet passed."
+T8,medium,"For any day in 2026, list date, shipper name, country, actual, forecast and gap, where the gap between actual and forecast is more than 200 packages.",False,0.0018482000000000001,10.511468083990621,"WITH daily_actual AS (
+    SELECT s.shipper_id, tr.run_date AS pickup_date, SUM(s.packages) AS actual_packages
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+    GROUP BY s.shipper_id, tr.run_date
+)
+SELECT f.forecast_date,
+       sh.name AS shipper_name,
+       sh.country,
+       COALESCE(a.actual_packages, 0) AS actual_packages,
+       f.forecast_packages,
+       COALESCE(a.actual_packages, 0) - f.forecast_packages AS gap_packages
+FROM forecasts f
+JOIN shippers sh ON sh.shipper_id = f.shipper_id
+LEFT JOIN daily_actual a
+  ON a.shipper_id = f.shipper_id AND a.pickup_date = f.forecast_date
+WHERE f.forecast_date BETWEEN '2026-01-01' AND '2026-10-19'
+  AND ABS(COALESCE(a.actual_packages, 0) - f.forecast_packages) > 200
+ORDER BY f.forecast_date, sh.name;","Gap = actual packages minus forecast packages; rows are included when the absolute gap is more than 200 packages (both over- and under-shipping). | Only shipper-days that have a forecast row are considered, since the gap is measured against the forecast; unplanned volume on days with no forecast is excluded. | 'Any day in 2026' is limited to 2026-01-01 through today (2026-10-19), because later forecast days have no actual volume yet. | Actual volume uses non-cancelled shipments grouped by truck run_date (pickup date), per the glossary. | Country is the shipper's country (shippers.country), as the glossary specifies for shipper metrics.",False,not found: gap,"There are 122 shipper-days in 2026, from 1 January through 19 October, where actual packages differed from forecast by more than 200 packages in either direction. The first 50 are shown, and every one has zero actual packages, so the forecast volume did not appear as shipments on those days. Each row lists the date, shipper, country, actual, forecast and gap, ordered by date and then shipper name."
+T9,hard,Create the ADV of each shipper for Jul 2026. Avg Daily Volume = total period volume / active days in the period. Active day = the shipper sent some volume and the forecast was non-zero.,False,0.0019912,11.751337957990472,"WITH daily_actual AS (
+    SELECT s.shipper_id, tr.run_date AS pickup_date, SUM(s.packages) AS actual_packages
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2026-07-01' AND '2026-07-31'
+    GROUP BY s.shipper_id, tr.run_date
+),
+period_volume AS (
+    SELECT shipper_id, SUM(actual_packages) AS total_volume
+    FROM daily_actual
+    GROUP BY shipper_id
+),
+active_days AS (
+    SELECT f.shipper_id, COUNT(*) AS active_days
+    FROM forecasts f
+    JOIN daily_actual a
+      ON a.shipper_id = f.shipper_id AND a.pickup_date = f.forecast_date
+    WHERE f.forecast_date BETWEEN '2026-07-01' AND '2026-07-31'
+      AND f.forecast_packages > 0
+      AND a.actual_packages > 0
+    GROUP BY f.shipper_id
+)
+SELECT p.shipper_id,
+       p.total_volume,
+       COALESCE(d.active_days, 0) AS active_days,
+       ROUND(1.0 * p.total_volume / NULLIF(d.active_days, 0), 1) AS adv
+FROM period_volume p
+LEFT JOIN active_days d ON d.shipper_id = p.shipper_id
+ORDER BY adv DESC;","Volume = packages of non-cancelled shipments, grouped by truck run_date (pickup date) for 1–31 July 2026. | Total period volume = all July 2026 actual volume for the shipper, including any volume sent on days that are not active days. | Active day = a day with a forecasts row where forecast_packages > 0 AND the shipper's actual volume that day > 0. | Shippers with volume but no active days return a NULL ADV rather than a division error. | Shippers with a forecast but no July volume are excluded, since they have no volume to average.",True,all answer columns found,"The highest Average Daily Volume among the 50 shippers shown is S0574, at 219.7 packages per active day (4,833 packages over 22 active days). The list runs from 219.7 down to 171.9, and 928 shippers have July 2026 volume in total. The figures cover non-cancelled shipments by pickup date from 1 to 31 July 2026."
+T10,easy,"List of shipper id, name and AM of shippers dropping packages in Liverpool in the current year.",False,0.0014591,7.8645785830012755,"SELECT DISTINCT sh.shipper_id,
+       sh.name,
+       sh.account_manager
+FROM shipments s
+JOIN truck_runs tr ON tr.run_id = s.run_id
+JOIN nodes n ON n.node_id = s.node_id
+JOIN shippers sh ON sh.shipper_id = s.shipper_id
+WHERE s.status <> 'Cancelled'
+  AND n.city = 'Liverpool'
+  AND tr.run_date BETWEEN '2026-01-01' AND '2026-12-31'
+ORDER BY sh.shipper_id;","""Current year"" = calendar 2026 (2026-01-01 to 2026-12-31, today is 2026-10-19), so the period runs to date. | ""Dropping packages in Liverpool"" = non-cancelled shipments whose destination node (shipments.node_id -> nodes.city) is Liverpool, not the shipper's own city. | The period is decided by the pickup date (truck_runs.run_date), per the volume definition. | Any shipper with at least one qualifying shipment is listed, with no minimum package volume applied.",True,all answer columns found,"**223 shippers** sent packages to Liverpool in 2026 so far, counting non-cancelled shipments by pickup date from 1 January to 31 December 2026. Each shipper appears once, with its ID, name, and account manager. The list is sorted by shipper ID, and the first 50 are shown above."

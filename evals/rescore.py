@@ -41,6 +41,16 @@ def main():
         gold_row = golden.loc[row["id"]]
         gold_result = pd.DataFrame(json.loads(gold_row["answer_json"]))
         refusal = str(gold_row.get("expect_refusal", "")) == "True"
+        if not str(row["ai_sql"]).strip():  # the copilot refused: no SQL was written
+            passed = refusal
+            reason = "refused as expected" if refusal else "refused an answerable question"
+            was = str(row["passed"]) == "True"
+            flag = "  <- changed" if passed != was else ""
+            changed += passed != was
+            print(f"{row['id']:3s} {'PASS' if passed else 'FAIL'}  {reason}{flag}")
+            report.at[i, "passed"] = passed
+            report.at[i, "reason"] = reason
+            continue
         try:
             ai_result = pd.read_sql(row["ai_sql"], conn)
             if refusal:  # an answer of any size, even empty, is not a refusal

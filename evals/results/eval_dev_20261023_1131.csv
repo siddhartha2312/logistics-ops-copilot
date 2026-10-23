@@ -1,0 +1,25 @@
+id,difficulty,question,retried,cost_usd,seconds,ai_sql,assumptions,passed,reason,ai_answer
+H3,hard,"How much unplanned volume did we get on bank holidays in 2026, by country?",False,0.0015301,9.20345441698737,"WITH daily_actual AS (
+    -- actual packages per shipper x pickup day, aggregated before any join
+    SELECT s.shipper_id, tr.run_date, SUM(s.packages) AS actual_packages
+    FROM shipments s
+    JOIN truck_runs tr ON tr.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+      AND tr.run_date BETWEEN '2026-01-01' AND '2026-12-31'
+    GROUP BY s.shipper_id, tr.run_date
+)
+SELECT sh.country,
+       COUNT(*) AS unplanned_shipper_days,
+       SUM(da.actual_packages) AS unplanned_packages
+FROM daily_actual da
+JOIN shippers sh
+  ON sh.shipper_id = da.shipper_id
+JOIN holidays h
+  ON h.country = sh.country
+ AND h.holiday_date = da.run_date
+LEFT JOIN forecasts f
+  ON f.shipper_id = da.shipper_id
+ AND f.forecast_date = da.run_date
+WHERE f.shipper_id IS NULL
+GROUP BY sh.country
+ORDER BY unplanned_packages DESC;","Bank holidays are all dates in the holidays table with a holiday_date in 2026. | Volume is attributed to the pickup date (truck_runs.run_date) and counted as unplanned when the shipper has no forecasts row for that date. | Country is the shipper's country (shippers.country), matched to the holiday's country, per the shipper-metric rule. | Cancelled shipments are excluded from volume, and volume is in packages.",True,all answer columns found,"In 2026, France had the most unplanned volume on bank holidays, with 3,402 packages across 82 shipper-days. The UK followed with 2,900 packages (66 shipper-days), then Italy with 2,285 (54 shipper-days), and Spain with 1,763 (44 shipper-days). These figures cover pickup dates from January 1 to December 31, 2026, where the shipper had no forecast, and exclude cancelled shipments."

@@ -53,12 +53,14 @@ verify any number.
 ```mermaid
 flowchart LR
     Q["Business question"] --> P["Prompt:<br/>schema + allowed values<br/>+ business glossary<br/>+ worked SQL examples"]
-    P --> L1["LLM call 1:<br/>write SQL"]
-    L1 --> DB[("Read-only<br/>SQLite<br/>30 s timeout")]
-    DB -->|"SQL error<br/>or timeout"| FIX["LLM: fix SQL<br/>(one retry)"]
-    FIX --> DB
+    P --> L1["LLM call 1 (JSON):<br/>SQL or 'cannot answer'<br/>+ assumptions"]
+    L1 -->|"data doesn't exist"| NO["'I can't answer:<br/>no weight data'"]
+    L1 -->|SQL| G{"SELECT-only<br/>check"}
+    G --> DB[("Read-only SQLite<br/>indexed<br/>30 s timeout<br/>10k row limit")]
+    DB -->|"SQL error, block<br/>or timeout"| FIX["LLM: fix SQL<br/>(one retry)"]
+    FIX --> G
     DB -->|"result table"| L2["LLM call 2:<br/>plain-English answer"]
-    L2 --> A["Answer + result<br/>+ SQL + cost"]
+    L2 --> A["Answer + assumptions<br/>+ result + SQL + cost"]
 ```
 
 - **Context from the database itself:** table schemas and the exact values of category
@@ -67,13 +69,19 @@ flowchart LR
   utilisation, avoidable cost, Sunday–Saturday weeks, pickup date) is sent with every
   question ([`docs/glossary.md`](docs/glossary.md)), with three worked SQL patterns
   ([`docs/sql_examples.md`](docs/sql_examples.md)).
-- **Read-only connection:** AI-written SQL cannot change data, whatever the prompt says.
-- **Time limits:** any query is stopped after 30 s and any model call after 60 s.
-  The timeout message tells the model how to rewrite the query efficiently for the retry.
-- **Bounded self-correction:** a failing query is sent back to the model with the error,
-  once. If it still fails, the user gets "I couldn't answer this", not a guess.
-- **Two calls, two jobs:** one writes SQL; the other explains the result and may only
-  use numbers that appear in it.
+- **Honest refusals:** the model replies in JSON with either SQL or `cannot_answer`. If
+  the question needs data that doesn't exist, it says which data is missing instead of
+  answering with a substitute.
+- **Visible assumptions:** every interpretation the glossary doesn't settle ("recently"
+  = Sep vs Aug 2026, "big drop" = 20%+) is listed under the answer.
+- **Safety in layers:** a read-only connection, plus a check that rejects anything
+  but a single SELECT before it reaches the database, plus a 10,000-row limit.
+- **Time limits:** any query is stopped after 30 s and any model call after 60 s. The
+  database is indexed, so well-meant but clumsy queries rarely get near the limit.
+- **Bounded self-correction:** a failing or blocked query is sent back to the model with
+  the error, once. If it still fails, the user gets "I couldn't answer this", not a guess.
+- **Two calls, two jobs:** one writes SQL; the other explains the result, may only use
+  numbers that appear in it, and gives the full row count (long results are saved to CSV).
 
 Model: Claude Haiku 5.5 (`claude-haiku-5-5`).
 
@@ -111,7 +119,8 @@ regardless of column names, row order or rounding.
 | Version | What changed | Dev | Held-out | Cost / question | Avg time |
 |---|---|---|---|---|---|
 | v0 | Schema + allowed values only | 5 / 15 (33%) | – | $0.0009 | 6.6 s |
-| v1 | + business glossary + worked examples + timeouts | **15 / 15 (100%)**, 3 runs out of 3 | **5 / 10 (50%)** | $0.0012–0.0016 | 7–10 s |
+| v1 | + business glossary + worked examples + timeouts | 15 / 15 (100%), 3 runs out of 3 | 5 / 10 (50%) | $0.0012–0.0016 | 7–10 s |
+| v2 | + JSON reply with honest refusals and assumptions, SELECT-only check, row limit, indexes | **15 / 15 (100%)** | **7–8 / 10 (70–80%)**, 2 runs | $0.0014 | 7.7 s |
 
 All scores use the current answer key and judge ([change log](evals/golden_changes.md)).
 
@@ -128,17 +137,27 @@ definitions and three worked SQL patterns fixed all of them on the dev set.
 - No failure was bad SQL, and every definition already in the glossary was applied
   correctly.
 
-The gap between 100% and 50% is the point of the held-out set: dev accuracy measures
+**What v2 fixed** ([analysis](evals/v2_results.md)):
+- Both missing-data questions are now refused, naming the missing field ("no weight
+  data; truck runs hold pallet capacity and pallets loaded"). No answerable dev
+  question was refused.
+- The slowest question went from 44 s (timeout + retry) to under 19 s: the database had
+  no indexes. A speed problem in the data, not the model.
+- The remaining held-out failures are all undefined business terms (week numbering,
+  what "closed" means for a node, days with volume but no forecast). Because they're
+  undefined, the model picks a different reading from run to run.
+
+The gap between dev and held-out is the point of the held-out set: dev accuracy measures
 how well the copilot was fitted, held-out accuracy estimates what a user would see.
 
 ## Next
 
 | Change | Targets |
 |---|---|
-| Let the copilot answer "this data isn't available" and state any substitute it uses | Held-out honesty failures |
-| Extend the glossary, then write a fresh held-out set | Undefined terms; honest re-measurement |
+| Extend the glossary (week numbering, node closures, unforecast days), then write a fresh held-out set | Remaining held-out failures; honest re-measurement |
 | Semantic layer: SQL views for on-time, attainment, utilisation, avoidable cost | Deterministic definitions; faster, simpler queries |
-| SQL guardrails: SELECT-only check, row limit | Safety |
+| Ask a clarifying question when a term is ambiguous and the answer depends on it | Trust |
+| Log every call (question, SQL, tokens, cost, latency) | Observability |
 | Compare models on accuracy, cost and latency | Evidence-based model choice |
 
 ## Run it
@@ -178,6 +197,7 @@ evals/
   baseline_analysis.md  v0 results and failure analysis
   v1_results.md         v1 results and what changed
   heldout_results.md    v1 on the held-out set and failure analysis
+  v2_results.md         v2 results: refusals, assumptions, guardrails
   golden_changes.md     log of every answer-key change
 ```
 

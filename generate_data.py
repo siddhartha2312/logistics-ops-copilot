@@ -785,10 +785,32 @@ def _to_sql_dates(df, date_cols, datetime_cols):
     return out
 
 
+# Indexes on the columns queries join and filter on. Without them every join scans
+# the full 411k-row tables, and AI-written queries can hit the 30 s timeout.
+INDEXES = [
+    "CREATE INDEX idx_shipments_run ON shipments(run_id)",
+    "CREATE INDEX idx_shipments_shipper ON shipments(shipper_id)",
+    "CREATE INDEX idx_runs_date ON truck_runs(run_date)",
+    "CREATE INDEX idx_runs_node ON truck_runs(node_id)",
+    "CREATE INDEX idx_stops_run ON run_stops(run_id)",
+    "CREATE INDEX idx_stops_shipper ON run_stops(shipper_id)",
+    "CREATE INDEX idx_forecasts_shipper_date ON forecasts(shipper_id, forecast_date)",
+    "CREATE INDEX idx_holidays_country_date ON holidays(country, holiday_date)",
+    "CREATE INDEX idx_exceptions_run ON exceptions(run_id)",
+    "CREATE INDEX idx_exceptions_shipment ON exceptions(shipment_id)",
+]
+
+
 def save_database(tables, path="logistics.db"):
     conn = sqlite3.connect(path)
     for name, df in tables.items():
         df.to_sql(name, conn, if_exists="replace", index=False)
+    for statement in INDEXES:
+        conn.execute(statement)
+    # ANALYZE records table sizes so SQLite picks the right index.
+    # Without it, some queries got slower with the indexes than without.
+    conn.execute("ANALYZE")
+    conn.commit()
     conn.close()
 
 

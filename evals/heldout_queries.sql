@@ -99,7 +99,7 @@ WHERE h.country = 'IT'
 -- Definition: wasted = truck sent, shipper loaded nothing (run_outcome = 'wasted').
 --   Week 30 2026 = 26 Jul - 1 Aug 2026. Country of the destination node.
 --   Counting trucks or their pallet capacity gives the same winner.
--- Check: country
+-- Check: country, wasted_trucks
 -- ---------------------------------------------------------------------
 SELECT n.country,
        COUNT(*) AS wasted_trucks,
