@@ -1,0 +1,236 @@
+id,difficulty,question,retried,cost_usd,seconds,ai_sql,assumptions,passed,reason,ai_answer
+E1,easy,How many shipments were cancelled last quarter?,False,0.0010205000000000001,3.967860541000846,"SELECT COUNT(*) AS cancelled_shipments
+FROM v_shipments
+WHERE is_cancelled = 1
+  AND created_date BETWEEN '2026-07-01' AND '2026-09-30';","'Last quarter' is Q3 2026 (2026-07-01 to 2026-09-30), per the glossary's definition of today as 2026-10-19. | Cancelled shipments are counted by created_date, as the glossary specifies for shipment counts by status. | Each cancelled shipment is counted once, regardless of which truck run it was on.",True,all answer columns found,"**946 shipments were cancelled in Q3 2026** (1 July to 30 September 2026). This counts shipments by the date they were created, and each shipment is counted once."
+E2,easy,How many active shippers do we have per country?,False,0.0009326000000000001,4.504259374996764,"SELECT country,
+       COUNT(*) AS active_shippers
+FROM shippers
+WHERE status = 'active'
+GROUP BY country
+ORDER BY country;","'Active' means shippers.status = 'active' (not de-listed), counted by shippers.country.",True,all answer columns found,"ES and IT have the most active shippers, with 242 each, followed by FR with 235 and UK with 233. The count covers all shippers currently marked active, with no date range applied. Results are broken down by the four countries listed."
+E3,easy,What % of UK shipments were held at customs?,False,0.0011784999999999999,6.8581485000031535,"SELECT
+  COUNT(is_customs_hold) AS shipments,
+  ROUND(100.0 * AVG(is_customs_hold), 1) AS customs_hold_pct
+FROM v_shipments
+WHERE shipper_country = 'UK';","UK is matched on shippers.country (shipper country), since this is a shipper metric. The alternative would be the destination node's country. | No time period was specified, so the figure covers all shipments in the data. | The rate uses non-cancelled shipments only, because is_customs_hold is NULL for cancelled shipments.",True,all answer columns found,"**8.5% of UK-shipper shipments were held at customs.** This covers 101,295 shipments with a UK shipper country, across all dates in the data."
+E4,easy,How many truck runs were ad-hoc in September 2026?,False,0.0008635,2.658573124994291,"SELECT COUNT(*) AS adhoc_runs
+FROM v_truck_runs
+WHERE is_adhoc = 1
+  AND run_date BETWEEN '2026-09-01' AND '2026-09-30';","September 2026 means run_date from 2026-09-01 to 2026-09-30, using the pickup date (truck_runs.run_date) as the glossary specifies. | Ad-hoc run = is_adhoc = 1, regardless of run_outcome (wasted ad-hoc runs are included).",True,all answer columns found,"There were 32 ad-hoc truck runs in September 2026. This counts runs with a pickup date from 1 to 30 September 2026, and includes ad-hoc runs regardless of outcome, so runs that were wasted are included in the 32."
+E5,easy,Which node has the highest daily pallet capacity?,False,0.0011179,4.634841833001701,"SELECT node_id,
+       node_type,
+       country,
+       city,
+       daily_capacity_pallets
+FROM nodes
+WHERE daily_capacity_pallets = (SELECT MAX(daily_capacity_pallets) FROM nodes);","'Daily pallet capacity' is nodes.daily_capacity_pallets. | All node types (warehouses and delivery stations) are included. | If more than one node ties for the maximum, all of them are returned.",True,all answer columns found,"Node **N-FR-02**, a warehouse in Lyon, France, has the highest daily pallet capacity, at 792 pallets per day. No other node matched that figure, so it is the only top result. The comparison covers all nodes, and no time period applies because this is a fixed capacity figure."
+M1,medium,"Compare on-time rate and cost per package for milkrun vs direct, last quarter.",False,0.0017661999999999999,9.905302125000162,"WITH run_cost AS (
+  SELECT run_type,
+         SUM(cost_eur) AS total_cost_eur
+  FROM v_truck_runs
+  WHERE run_date BETWEEN '2026-07-01' AND '2026-09-30'
+  GROUP BY run_type
+),
+shipment_metrics AS (
+  SELECT run_type,
+         COUNT(is_on_time) AS non_cancelled_shipments,
+         ROUND(100.0 * AVG(is_on_time), 1) AS on_time_pct,
+         SUM(volume_packages) AS packages
+  FROM v_shipments
+  WHERE pickup_date BETWEEN '2026-07-01' AND '2026-09-30'
+  GROUP BY run_type
+)
+SELECT s.run_type,
+       s.non_cancelled_shipments,
+       s.on_time_pct,
+       ROUND(r.total_cost_eur, 2) AS total_cost_eur,
+       s.packages,
+       ROUND(r.total_cost_eur / s.packages, 2) AS cost_per_package_eur
+FROM shipment_metrics s
+JOIN run_cost r ON r.run_type = s.run_type
+ORDER BY s.run_type;","Last quarter = Q3 2026: pickup dates 2026-07-01 to 2026-09-30 (today is 2026-10-19). | Period is based on pickup date (truck_runs.run_date) for both runs and shipments. | Cost per package uses total cost_eur of all runs in the period, including wasted and ad-hoc runs, divided by packages of non-cancelled shipments on those runs. | Each shipment is attributed to the run_type of its truck run (milkrun or direct).",True,all answer columns found,"In Q3 2026 (pickups from 1 July to 30 September 2026), direct runs had the higher on-time rate at 87.8%, compared with 72.6% for milkrun. Direct also cost more per package, at €4.88 against €2.67 for milkrun. The comparison covers 47,300 non-cancelled direct shipments and 23,969 non-cancelled milkrun shipments, and the cost figures include all truck runs in the period, including wasted and ad-hoc runs."
+M2,medium,What was our weekly attainment for FR shippers last quarter?,False,0.0016404000000000002,9.928434332992765,"SELECT week_start,
+       SUM(forecast_packages) AS forecast_packages,
+       SUM(actual_packages) AS actual_packages,
+       ROUND(100.0 * SUM(actual_packages) / SUM(forecast_packages), 1) AS attainment_pct
+FROM v_attainment_daily
+WHERE shipper_country = 'FR'
+  AND week_start BETWEEN '2026-07-01' AND '2026-09-30'
+GROUP BY week_start
+ORDER BY week_start;","Last quarter = Q3 2026 (2026-07-01 to 2026-09-30), per the glossary. | A week belongs to the quarter if its week_start falls inside it, so the week starting 2026-06-28 is excluded even though it contains 1 July. | FR shippers are identified by shippers.country = 'FR' (shipper_country in the view). | Weekly attainment = SUM(actual_packages) / SUM(forecast_packages) over forecast days only, aggregated across all FR shippers for each week, with no minimum-volume filter.",True,all answer columns found,"Weekly attainment for FR shippers in Q3 2026 stayed between 95.9% and 98.9% every week, so actual packages came in just under forecast throughout. The best week was the one starting 5 July at 98.9%, and the weakest was the one starting 16 August at 95.9%. The figures cover the 13 weeks starting 1 July to 27 September, FR shippers only, on forecast days, combined across all FR shippers, and the full week-by-week breakdown is in the table."
+M3,medium,Which 10 shippers had the lowest attainment in Q3 2026?,False,0.0014359,7.675823583995225,"SELECT shipper_id,
+       shipper_name,
+       SUM(forecast_packages) AS forecast_packages,
+       SUM(actual_packages) AS actual_packages,
+       ROUND(100.0 * SUM(actual_packages) / SUM(forecast_packages), 1) AS attainment_pct
+FROM v_attainment_daily
+WHERE day BETWEEN '2026-07-01' AND '2026-09-30'
+GROUP BY shipper_id, shipper_name
+HAVING SUM(forecast_packages) >= 500
+ORDER BY attainment_pct ASC
+LIMIT 10;","Q3 2026 = 2026-07-01 to 2026-09-30, matched on forecast day (pickup date). | Attainment = SUM(actual_packages) / SUM(forecast_packages) over forecast days only, not an average of daily ratios. | Shippers with a Q3 forecast below 500 packages are excluded from the ranking, per the low-volume rule. | Lowest attainment means ascending order by attainment_pct; ties are not broken further.",True,all answer columns found,"Turner, Ford and Dobson 87 had the lowest attainment in Q3 2026 at 65.0%, meaning they shipped 2,893 of 4,450 forecast packages. The ten lowest-attainment shippers ranged from 65.0% to 69.3%, and Fisher Ltd 13 was the tenth at 69.3%. The ranking covers July 1 to September 30, 2026, and includes only shippers with at least 500 forecast packages in that period."
+M4,medium,Did any de-listed shipper have volume after being de-listed?,False,0.0012513,7.101416083998629,"SELECT s.shipper_id,
+       s.name,
+       s.delisted_date,
+       COUNT(v.shipment_id) AS shipments_after_delisting,
+       SUM(v.volume_packages) AS packages_after_delisting,
+       MAX(v.pickup_date) AS last_pickup_date
+FROM shippers s
+JOIN v_shipments v
+  ON v.shipper_id = s.shipper_id
+WHERE s.status = 'de-listed'
+  AND v.is_cancelled = 0
+  AND v.pickup_date > s.delisted_date
+GROUP BY s.shipper_id, s.name, s.delisted_date
+ORDER BY packages_after_delisting DESC;","Volume means non-cancelled packages (volume_packages), counted by pickup_date. | 'After being de-listed' means pickup_date strictly later than shippers.delisted_date. | Only shippers with status 'de-listed' are considered; a shipper with no delisted_date would not match.",True,both empty,"No, none of the de-listed shippers had any volume after their de-listing date. The check counted non-cancelled packages by pickup date, and looked only at shippers marked as de-listed with a recorded de-listing date, for pickups dated after that date. No data matched, so no de-listed shipper shows activity after being removed."
+M5,medium,What was average truck utilisation by country last month?,False,0.0011225999999999999,4.872574249995523,"SELECT node_country,
+       ROUND(100.0 * SUM(pallets_loaded) / SUM(pallet_capacity), 1) AS utilisation_pct
+FROM v_truck_runs
+WHERE run_date BETWEEN '2026-09-01' AND '2026-09-30'
+GROUP BY node_country
+ORDER BY node_country;","Last month = September 2026 (2026-09-01 to 2026-09-30), since today is 2026-10-19. | Period is set by run_date (pickup date), per the glossary. | Country is the destination node's country (v_truck_runs.node_country), as the glossary specifies for truck metrics. | Average utilisation is computed as SUM(pallets_loaded) / SUM(pallet_capacity), not an average of per-truck ratios, as the glossary requires. | All truck runs are included, including wasted runs, because the utilisation definition does not exclude them.",True,all answer columns found,"Average truck utilisation in September 2026 was between 70.6% and 71.2% in every destination country, with the UK highest at 71.2% and France lowest at 70.6%. Spain came in at 71.0% and Italy at 70.9%. The figures cover all truck runs by pickup date, measured by the destination country, and include wasted runs."
+H1,hard,"Which nodes went over capacity during peak 2025, and on how many days?",False,0.0013573,5.733133917005034,"WITH node_daily_load AS (
+  SELECT node_id,
+         run_date,
+         SUM(pallets_loaded) AS pallets_arriving
+  FROM v_truck_runs
+  WHERE run_date BETWEEN '2025-11-28' AND '2025-12-24'
+  GROUP BY node_id, run_date
+)
+SELECT d.node_id,
+       n.city,
+       n.country,
+       n.daily_capacity_pallets,
+       COUNT(*) AS days_over_capacity,
+       MAX(d.pallets_arriving) AS peak_day_pallets
+FROM node_daily_load d
+JOIN nodes n
+  ON n.node_id = d.node_id
+WHERE d.pallets_arriving > n.daily_capacity_pallets
+GROUP BY d.node_id, n.city, n.country, n.daily_capacity_pallets
+ORDER BY days_over_capacity DESC, d.node_id;","Peak 2025 = 2025-11-28 to 2025-12-24 (Black Friday to Christmas Eve), using run_date as the day. | Node load = SUM of pallets_loaded on all truck runs arriving at the node on that run_date, including wasted runs, per the glossary's node load definition. | Over capacity = node daily load strictly greater than nodes.daily_capacity_pallets. | Only days with arriving truck runs are counted; a node with no runs on a day cannot be over capacity that day.",True,all answer columns found,"Only one node went over capacity during peak 2025 (28 November to 24 December 2025): London in the UK (node N-UK-01). It exceeded its daily capacity of 150 pallets on 19 days, with its busiest day reaching 253 pallets. The full list is in the table, and it contains just this one row."
+H2,hard,Which Account Managers' shippers drove the most avoidable cost last quarter?,False,0.0011955,5.9397875830036355,"SELECT account_manager,
+       ROUND(SUM(avoidable_cost_share_eur), 2) AS avoidable_cost_eur
+FROM v_shipper_avoidable_cost
+WHERE run_date BETWEEN '2026-07-01' AND '2026-09-30'
+GROUP BY account_manager
+ORDER BY avoidable_cost_eur DESC;","Last quarter = Q3 2026 (2026-07-01 to 2026-09-30), per the glossary. | Period is based on run_date (pickup date), as the glossary requires for cost. | Avoidable cost is split equally across each run's stops and attributed to account managers via shippers.account_manager, using avoidable_cost_share_eur from the semantic view. | Results are ranked by total avoidable cost in EUR, highest first; all account managers with cost in the quarter are shown.",True,all answer columns found,"Denis Davies drove the most avoidable cost in Q3 2026, at €21,625.74, followed by Alphonse Durand at €19,988.22 and Angelica Santi at €17,452.26. The figures cover 1 July to 30 September 2026, counted by pickup date, and are ranked highest to lowest. The result covers 25 account managers, and the full list is in the table."
+H3,hard,"How much unplanned volume did we get on bank holidays in 2026, by country?",False,0.0016313,9.413536499996553,"WITH daily AS (
+  SELECT shipper_id,
+         shipper_country,
+         pickup_date AS day,
+         SUM(volume_packages) AS actual_packages
+  FROM v_shipments
+  WHERE pickup_date BETWEEN '2026-01-01' AND '2026-12-31'
+    AND is_cancelled = 0
+  GROUP BY shipper_id, shipper_country, pickup_date
+)
+SELECT d.shipper_country,
+       SUM(d.actual_packages) AS unplanned_packages,
+       COUNT(*) AS shipper_days
+FROM daily d
+WHERE EXISTS (
+        SELECT 1
+        FROM holidays h
+        WHERE h.country = d.shipper_country
+          AND h.holiday_date = d.day
+      )
+  AND NOT EXISTS (
+        SELECT 1
+        FROM forecasts f
+        WHERE f.shipper_id = d.shipper_id
+          AND f.forecast_date = d.day
+      )
+GROUP BY d.shipper_country
+ORDER BY unplanned_packages DESC;","Bank holidays in 2026 are all rows in the holidays table dated 2026-01-01 to 2026-12-31, matched to the shipper's country. | Unplanned volume is counted by pickup date (truck run date) and is non-cancelled packages only. | A shipper-day is unplanned when that shipper has no forecast row for that day. | Country is the shipper's country (shippers.country), as the glossary specifies for shipper metrics. | shipper_days counts shipper-days with non-cancelled volume on a bank holiday and no forecast.",True,all answer columns found,"Unplanned volume on bank holidays in 2026 was highest in France (3,402 packages across 82 shipper-days), followed by the UK (2,900 packages, 66 shipper-days), Italy (2,285 packages, 54 shipper-days) and Spain (1,763 packages, 44 shipper-days). Only non-cancelled shipments were counted, and a shipper-day counts as unplanned when that shipper had no forecast for that day. Countries are based on the shipper's location."
+H4,hard,Which shippers missed the +/-10% attainment band for 3+ consecutive weeks?,False,0.0025800000000000003,16.589485040996806,"WITH weekly AS (
+  SELECT shipper_id,
+         shipper_name,
+         week_start,
+         SUM(actual_packages) * 1.0 / SUM(forecast_packages) AS attainment
+  FROM v_attainment_daily
+  GROUP BY shipper_id, shipper_name, week_start
+),
+missed AS (
+  SELECT shipper_id,
+         shipper_name,
+         week_start
+  FROM weekly
+  WHERE attainment < 0.9 OR attainment > 1.1
+),
+numbered AS (
+  SELECT shipper_id,
+         shipper_name,
+         week_start,
+         ROW_NUMBER() OVER (PARTITION BY shipper_id ORDER BY week_start) AS rn
+  FROM missed
+),
+streaks AS (
+  SELECT shipper_id,
+         shipper_name,
+         week_start,
+         date(week_start, '-' || (7 * rn) || ' days') AS grp
+  FROM numbered
+)
+SELECT shipper_id,
+       shipper_name,
+       COUNT(*) AS streak_weeks,
+       MIN(week_start) AS streak_start,
+       MAX(week_start) AS streak_end
+FROM streaks
+GROUP BY shipper_id, shipper_name, grp
+HAVING COUNT(*) >= 3
+ORDER BY streak_weeks DESC, shipper_id;","No period was given, so the check covers all weeks with forecast rows in the data. | Weekly attainment = SUM(actual_packages) / SUM(forecast_packages) over the forecast days in each Sunday-start week, per the glossary. | Missed the band = weekly attainment below 90% or above 110%; exactly 90% and 110% count as inside the band. | Consecutive means adjacent calendar weeks with no gap. A week with no forecast rows breaks the streak. | Each run of 3 or more missed weeks is reported as its own row, so a shipper can appear more than once. | The low-volume exclusion (weekly forecast under 50 packages) is not applied because the question asks which shippers missed the band, not for a ranking.",True,all answer columns found,"Across all weeks with forecast data, the check found 366 runs of three or more consecutive weeks where a shipper's actual packages fell outside the ±10% band of forecast. A shipper can appear more than once, and the full list is in the table. The longest runs are 92 consecutive missed weeks for 12 shippers, including Fisher Ltd and Cox and Sons, running from 2024-12-29 to 2026-09-27. That run spans nearly the whole period, so it is worth checking that those shippers' forecasts are correct."
+H5,hard,"For milkruns, which shippers are most often the cause of late node arrivals?",False,0.0030136,17.87966466699436,"WITH stops AS (
+  SELECT rs.run_id,
+         rs.shipper_id,
+         rs.stop_sequence,
+         (julianday(rs.actual_pickup_time) - julianday(rs.planned_pickup_time)) * 1440.0 AS lateness_min
+  FROM run_stops rs
+  JOIN v_truck_runs t ON t.run_id = rs.run_id
+  WHERE t.run_type = 'milkrun'
+),
+delays AS (
+  SELECT run_id,
+         shipper_id,
+         stop_sequence,
+         lateness_min - COALESCE(LAG(lateness_min) OVER (PARTITION BY run_id ORDER BY stop_sequence), 0) AS added_delay_min
+  FROM stops
+),
+blame AS (
+  SELECT run_id, shipper_id
+  FROM (
+    SELECT run_id,
+           shipper_id,
+           ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY added_delay_min DESC, stop_sequence) AS rn
+    FROM delays
+  )
+  WHERE rn = 1
+),
+late_blame AS (
+  SELECT b.shipper_id,
+         COUNT(*) AS late_milkruns_blamed
+  FROM blame b
+  JOIN v_truck_runs t ON t.run_id = b.run_id
+  WHERE t.is_late = 1
+  GROUP BY b.shipper_id
+),
+milkruns AS (
+  SELECT rs.shipper_id,
+         COUNT(DISTINCT rs.run_id) AS milkruns_served
+  FROM run_stops rs
+  JOIN v_truck_runs t ON t.run_id = rs.run_id
+  WHERE t.run_type = 'milkrun'
+  GROUP BY rs.shipper_id
+)
+SELECT m.shipper_id,
+       sh.name AS shipper_name,
+       m.milkruns_served,
+       COALESCE(lb.late_milkruns_blamed, 0) AS late_milkruns_blamed,
+       ROUND(100.0 * COALESCE(lb.late_milkruns_blamed, 0) / m.milkruns_served, 1) AS blamed_pct_of_milkruns
+FROM milkruns m
+LEFT JOIN late_blame lb ON lb.shipper_id = m.shipper_id
+LEFT JOIN shippers sh ON sh.shipper_id = m.shipper_id
+WHERE m.milkruns_served >= 20
+ORDER BY late_milkruns_blamed DESC, blamed_pct_of_milkruns DESC;","Late milkrun = is_late = 1 in v_truck_runs (completed runs where actual arrival is after planned arrival). | Each late milkrun is blamed on the single stop that added the most delay, where added delay = stop's pickup lateness minus the previous stop's pickup lateness (lateness in minutes, from run_stops planned and actual pickup times). | The first stop of a run is compared against zero lateness; ties on added delay go to the earlier stop_sequence. | Milkruns per shipper = distinct milkruns (all outcomes) on which the shipper has a stop; only shippers with at least 20 such milkruns are ranked. | Ranking is by count of late milkruns blamed, with the share of the shipper's milkruns shown as a secondary column.",True,all answer columns found,"Adam 453 is blamed for the most late milkruns: 185 of the 191 milkruns it served (96.9%). Anichini-Zabarella SPA 579 (178 of 183) and Ferrand 496 (171 of 177) follow closely. The first 19 shippers each have roughly 80% or more of their milkruns blamed on them, and the shares drop to about 11% to 19% from the 20th shipper down. This covers all milkruns in the data with no date limit, counting only shippers with at least 20 milkruns. The full ranking has 965 shippers and is in the table."

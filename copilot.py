@@ -26,6 +26,7 @@ DB_FILE = "logistics.db"
 DOCS_DIR = Path(__file__).resolve().parent / "docs"
 GLOSSARY_FILE = DOCS_DIR / "glossary.md"
 EXAMPLES_FILE = DOCS_DIR / "sql_examples.md"
+SEMANTIC_FILE = DOCS_DIR / "semantic_layer.md"
 
 # Limits so a user never waits on a runaway query or a hanging API call.
 SQL_TIMEOUT_S = 30   # stop any single SQL query after this many seconds
@@ -65,16 +66,18 @@ Rules:
 
 
 def get_schema(conn):
-    """List every table with its columns and types."""
+    """List every view and table with its columns. Views (the semantic layer) first."""
     lines = []
-    tables = conn.execute(
+    objects = conn.execute(
         # sqlite_% = SQLite's own tables (e.g. sqlite_stat1 from ANALYZE), not business data
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        "SELECT type, name FROM sqlite_master WHERE type IN ('view', 'table') "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY type DESC, name"
     ).fetchall()
-    for (table,) in tables:
-        cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        col_text = ", ".join(f"{c[1]} {c[2]}" for c in cols)
-        lines.append(f"{table}({col_text})")
+    for kind, name in objects:
+        cols = conn.execute(f"PRAGMA table_info({name})").fetchall()
+        col_text = ", ".join(f"{c[1]} {c[2]}".strip() for c in cols)
+        label = "VIEW " if kind == "view" else ""
+        lines.append(f"{label}{name}({col_text})")
     return "\n".join(lines)
 
 
@@ -92,14 +95,18 @@ def get_allowed_values(conn):
 
 
 def build_system_prompt(conn):
-    """Instructions + database facts + business definitions + worked examples."""
+    """Instructions + database facts + semantic layer + definitions + worked examples."""
+    semantic = SEMANTIC_FILE.read_text()
     glossary = GLOSSARY_FILE.read_text()
     examples = EXAMPLES_FILE.read_text()
     return f"""You are a SQL expert for a logistics company's SQLite database.
 Write ONE SQLite query that answers the user's question.
 
 Rules:
-- Use only the tables and columns listed below. Never invent a column.
+- Use only the tables, views and columns listed below. Never invent a column.
+- Prefer the semantic layer views (v_*). They already apply the business definitions
+  (denominators, pickup date, weeks, countries, cost splits). Use raw tables only for
+  columns no view has.
 - Use only the exact category values listed below. They are case-sensitive.
 - Follow the business definitions below exactly. When the question uses a term
   defined there (on-time, attainment, utilisation, avoidable cost, peak, week...),
@@ -131,6 +138,9 @@ Schema:
 
 Allowed values:
 {get_allowed_values(conn)}
+
+Semantic layer (views and what their columns mean):
+{semantic}
 
 Business definitions:
 {glossary}

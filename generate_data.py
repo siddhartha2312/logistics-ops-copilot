@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 import random
 import sqlite3
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -807,6 +808,8 @@ def save_database(tables, path="logistics.db"):
         df.to_sql(name, conn, if_exists="replace", index=False)
     for statement in INDEXES:
         conn.execute(statement)
+    # Semantic layer: views that hold the business definitions (docs/semantic_layer.md).
+    conn.executescript(Path(__file__).resolve().parent.joinpath("db", "semantic.sql").read_text())
     # ANALYZE records table sizes so SQLite picks the right index.
     # Without it, some queries got slower with the indexes than without.
     conn.execute("ANALYZE")

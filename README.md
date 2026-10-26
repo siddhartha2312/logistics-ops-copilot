@@ -52,11 +52,11 @@ verify any number.
 
 ```mermaid
 flowchart LR
-    Q["Business question"] --> P["Prompt:<br/>schema + allowed values<br/>+ business glossary<br/>+ worked SQL examples"]
+    Q["Business question"] --> P["Prompt:<br/>schema + semantic layer<br/>+ business glossary<br/>+ worked SQL examples"]
     P --> L1["LLM call 1 (JSON):<br/>SQL or 'cannot answer'<br/>+ assumptions"]
     L1 -->|"data doesn't exist"| NO["'I can't answer:<br/>no weight data'"]
     L1 -->|SQL| G{"SELECT-only<br/>check"}
-    G --> DB[("Read-only SQLite<br/>indexed<br/>30 s timeout<br/>10k row limit")]
+    G --> DB[("Read-only SQLite<br/>semantic views, indexed<br/>30 s timeout<br/>10k row limit")]
     DB -->|"SQL error, block<br/>or timeout"| FIX["LLM: fix SQL<br/>(one retry)"]
     FIX --> G
     DB -->|"result table"| L2["LLM call 2:<br/>plain-English answer"]
@@ -65,6 +65,10 @@ flowchart LR
 
 - **Context from the database itself:** table schemas and the exact values of category
   columns are read at runtime, so the prompt never goes stale.
+- **Semantic layer:** four verified views (`v_shipments`, `v_attainment_daily`,
+  `v_truck_runs`, `v_shipper_avoidable_cost`) hold the business definitions as SQL, with
+  tests that they reproduce known answers ([`docs/semantic_layer.md`](docs/semantic_layer.md)).
+  The copilot filters and groups them instead of rebuilding the logic.
 - **Business glossary:** the agreed meaning of every metric (on-time, attainment,
   utilisation, avoidable cost, Sunday–Saturday weeks, pickup date) is sent with every
   question ([`docs/glossary.md`](docs/glossary.md)), with three worked SQL patterns
@@ -120,7 +124,8 @@ regardless of column names, row order or rounding.
 |---|---|---|---|---|---|
 | v0 | Schema + allowed values only | 5 / 15 (33%) | – | $0.0009 | 6.6 s |
 | v1 | + business glossary + worked examples + timeouts | 15 / 15 (100%), 3 runs out of 3 | 5 / 10 (50%) | $0.0012–0.0016 | 7–10 s |
-| v2 | + JSON reply with honest refusals and assumptions, SELECT-only check, row limit, indexes | **15 / 15 (100%)** | **7–8 / 10 (70–80%)**, 2 runs | $0.0014 | 7.7 s |
+| v2 | + JSON reply with honest refusals and assumptions, SELECT-only check, row limit, indexes | 15 / 15 (100%) | 7–8 / 10 (70–80%), 2 runs | $0.0014 | 7.7 s |
+| v3 | + semantic layer: verified SQL views for the business definitions | **15 / 15 (100%)** | **8 / 10 (80%)** | $0.0015 | 7.8 s |
 
 All scores use the current answer key and judge ([change log](evals/golden_changes.md)).
 
@@ -147,6 +152,12 @@ definitions and three worked SQL patterns fixed all of them on the dev set.
   what "closed" means for a node, days with volume but no forecast). Because they're
   undefined, the model picks a different reading from run to run.
 
+**What v3 changed** ([analysis](evals/v3_results.md)): accuracy stayed the same, but
+the business logic moved out of the AI's SQL into four tested views. The AI now writes
+71% fewer joins and no business rules (CASE logic 4 → 0); weekly attainment went from
+29 lines of SQL to 9. New questions have far fewer places to go wrong, and the copilot
+reads the same definitions a dashboard would.
+
 The gap between dev and held-out is the point of the held-out set: dev accuracy measures
 how well the copilot was fitted, held-out accuracy estimates what a user would see.
 
@@ -155,7 +166,6 @@ how well the copilot was fitted, held-out accuracy estimates what a user would s
 | Change | Targets |
 |---|---|
 | Extend the glossary (week numbering, node closures, unforecast days), then write a fresh held-out set | Remaining held-out failures; honest re-measurement |
-| Semantic layer: SQL views for on-time, attainment, utilisation, avoidable cost | Deterministic definitions; faster, simpler queries |
 | Ask a clarifying question when a term is ambiguous and the answer depends on it | Trust |
 | Log every call (question, SQL, tokens, cost, latency) | Observability |
 | Compare models on accuracy, cost and latency | Evidence-based model choice |
@@ -171,7 +181,8 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env          # then add your ANTHROPIC_API_KEY
-python generate_data.py       # builds logistics.db (~1 min)
+python generate_data.py       # builds logistics.db with views (~1 min)
+python db/test_semantic.py    # checks the views
 python evals/build_golden.py && python evals/build_golden.py --set heldout
 
 python copilot.py "Which carrier had the most late arrivals in September 2026?"
@@ -185,8 +196,12 @@ python evals/run_evals.py --set heldout   # score the held-out set
 copilot.py              question → SQL → read-only run → answer
 generate_data.py        builds the synthetic network (seed 42)
 docs/data_model.md      tables, business definitions, planted scenarios
+docs/semantic_layer.md  what each view and column means, sent with every question
 docs/glossary.md        agreed metric definitions, sent with every question
 docs/sql_examples.md    worked SQL patterns, sent with every question
+db/
+  semantic.sql          the semantic layer views (built by generate_data.py)
+  test_semantic.py      tests that the views reproduce known answers
 evals/
   golden_queries.sql    ground-truth SQL for the dev questions
   heldout_queries.sql   ground-truth SQL for the held-out questions
@@ -198,6 +213,7 @@ evals/
   v1_results.md         v1 results and what changed
   heldout_results.md    v1 on the held-out set and failure analysis
   v2_results.md         v2 results: refusals, assumptions, guardrails
+  v3_results.md         v3 results: semantic layer
   golden_changes.md     log of every answer-key change
 ```
 

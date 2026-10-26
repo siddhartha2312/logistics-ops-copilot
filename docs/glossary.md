@@ -3,6 +3,10 @@
 Agreed definitions for the first-mile network. The copilot reads this file with
 every question; analysts and dashboards should use the same definitions.
 
+Most of these definitions are already built into the semantic layer views
+(`docs/semantic_layer.md`). Use the views; this file explains what they mean and
+covers what views can't hold (periods, thresholds, ranking rules).
+
 ## Dates and periods
 
 - **Today** is 2026-10-19. Last quarter = 2026-07-01 to 2026-09-30.
