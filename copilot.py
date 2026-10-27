@@ -294,10 +294,17 @@ def answer_in_english(client, question, sql, result, assumptions=(), max_rows=50
 
 
 def log_call(record):
-    """Append one question's record to the log file (JSON Lines)."""
-    LOG_FILE.parent.mkdir(exist_ok=True)
-    with LOG_FILE.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+    """Append one question's record to the log file (JSON Lines).
+
+    A logging failure must never block the answer: warn and carry on.
+    """
+    try:
+        LOG_FILE.parent.mkdir(exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"Warning: could not write the call log ({error}). The answer is unaffected.",
+              file=sys.stderr)
 
 
 class CallStats:
