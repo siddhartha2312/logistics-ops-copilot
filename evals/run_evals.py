@@ -48,7 +48,7 @@ def evaluate_one(client, conn, system_prompt, row):
     """Ask the copilot one golden question and compare with the golden answer."""
     record = {"id": row["id"], "difficulty": row["difficulty"], "question": row["question"]}
     try:
-        out = ask(client, conn, system_prompt, row["question"])
+        out = ask(client, conn, system_prompt, row["question"], source=f"eval:{row['id']}")
     except Exception as error:  # e.g. API down, no credit
         return {**record, "passed": False, "reason": f"copilot crashed: {error}",
                 "retried": False, "cost_usd": 0.0, "seconds": 0.0, "ai_sql": "", "ai_answer": ""}

@@ -15,6 +15,8 @@ import re
 import sqlite3
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -22,6 +24,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 MODEL = "claude-haiku-5-5"
+PROMPT_VERSION = "v3.1"  # bump when the prompt, glossary, views or examples change
 DB_FILE = "logistics.db"
 DOCS_DIR = Path(__file__).resolve().parent / "docs"
 GLOSSARY_FILE = DOCS_DIR / "glossary.md"
@@ -33,6 +36,11 @@ SQL_TIMEOUT_S = 30   # stop any single SQL query after this many seconds
 MAX_ROWS = 10_000    # never load more rows than this into memory or the answer
 PRINT_ROWS = 20      # rows printed in the terminal; the full result goes to a CSV
 RESULT_FILE = "last_result.csv"
+
+# One JSON line per question. Holds questions, SQL and answers (which can name
+# shippers), so the folder is gitignored. Result rows are never logged: the SQL
+# recreates them from the database.
+LOG_FILE = Path(__file__).resolve().parent / "logs" / "calls.jsonl"
 API_TIMEOUT_S = 60   # stop any single Claude call after this many seconds
 
 # USD per million tokens for MODEL (check the pricing page if you change model).
@@ -44,7 +52,7 @@ CATEGORY_COLUMNS = {
     "shipments": ["status", "hold_reason", "service_level"],
     "truck_runs": ["run_type", "run_outcome", "carrier"],
     "shippers": ["country", "status", "operating_days", "account_manager"],
-    "nodes": ["node_type"],
+    "nodes": ["node_type", "operating_days"],
     "exceptions": ["exception_type"],
 }
 
@@ -57,9 +65,9 @@ Rules:
 - State the time period and filters the query used, so the reader knows what is counted.
 - If the result is empty, say that no data matched.
 - If you only see part of the result, give the total number of rows and say the full
-  list is in the table. Never write "only the first N are shown". Describe only what is
-  certain from the rows you see (e.g. the top rows of a sorted list); don't generalise
-  from them to all rows.
+  list is in the table. Never mention how many rows you were shown ("the first 50",
+  "the rows shown"). Only state facts that hold for the whole result (the total, the
+  top rows of a sorted list); never describe a pattern across rows you can't all see.
 - The assumptions are shown to the reader separately: don't repeat them.
 - Do not mention SQL, tables or column names.
 """
@@ -285,41 +293,106 @@ def answer_in_english(client, question, sql, result, assumptions=(), max_rows=50
     return reply_text.strip(), usage, cost
 
 
-def ask(client, conn, system_prompt, question):
+def log_call(record):
+    """Append one question's record to the log file (JSON Lines)."""
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+
+
+class CallStats:
+    """Collects tokens, cost and time per stage for one question."""
+
+    def __init__(self):
+        self.start = time.perf_counter()
+        self.tokens_in = self.tokens_out = 0
+        self.cost = 0.0
+        self.stage_seconds = {}
+
+    def add(self, usage, cost):
+        self.tokens_in += usage.input_tokens
+        self.tokens_out += usage.output_tokens
+        self.cost += cost
+
+    def timed(self, stage, func, *args):
+        """Run func(*args) and add its duration to the stage."""
+        t0 = time.perf_counter()
+        try:
+            return func(*args)
+        finally:
+            self.stage_seconds[stage] = round(
+                self.stage_seconds.get(stage, 0) + time.perf_counter() - t0, 3)
+
+
+def ask(client, conn, system_prompt, question, source="cli", user="local"):
     """Full pipeline for one question: SQL, run (one retry on error), answer.
 
-    Returns a dict, so evals/run_evals.py can reuse it.
+    Every call is logged to logs/calls.jsonl. Returns a dict, so
+    evals/run_evals.py can reuse it.
     """
-    start = time.perf_counter()
-    reply, _, cost = question_to_sql(client, system_prompt, question)
+    stats = CallStats()
+    out = _ask(client, conn, system_prompt, question, stats)
+    out["cost"] = stats.cost
+    out["seconds"] = time.perf_counter() - stats.start
+
+    result = out.get("result")
+    log_call({
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "call_id": uuid.uuid4().hex[:12],
+        "source": source,                 # cli, eval, ui...
+        "user": user,
+        "model": MODEL,
+        "prompt_version": PROMPT_VERSION,
+        "question": question,
+        "outcome": ("answered" if out["ok"] else
+                    "cannot_answer" if out["cannot_answer"] else "failed"),
+        "sql": out.get("sql", ""),
+        "assumptions": out.get("assumptions", []),
+        "cannot_answer_reason": out["error"] if out["cannot_answer"] else None,
+        "error": out["error"] if not out["ok"] and not out["cannot_answer"] else None,
+        "retried": out["retried"],
+        "row_count": None if result is None else len(result),
+        "truncated": None if result is None else bool(result.attrs.get("truncated")),
+        "answer": out.get("answer"),
+        "tokens_in": stats.tokens_in,
+        "tokens_out": stats.tokens_out,
+        "cost_usd": round(stats.cost, 6),
+        "seconds": round(out["seconds"], 3),
+        "stage_seconds": stats.stage_seconds,
+    })
+    return out
+
+
+def _ask(client, conn, system_prompt, question, stats):
+    """The pipeline itself. Records tokens, cost and stage times in stats."""
+    reply, usage, cost = stats.timed("write_sql", question_to_sql, client, system_prompt, question)
+    stats.add(usage, cost)
     sql, assumptions = reply["sql"], reply["assumptions"]
 
     # The model says the data can't answer this: stop here, no SQL is run.
     if reply["cannot_answer"] or not sql:
         reason = reply["cannot_answer"] or "No query was produced."
         return {"ok": False, "cannot_answer": True, "error": reason, "sql": "",
-                "assumptions": assumptions, "retried": False,
-                "cost": cost, "seconds": time.perf_counter() - start}
+                "assumptions": assumptions, "retried": False}
 
     retried = False
     try:
-        result = run_sql(conn, sql)
+        result = stats.timed("run_sql", run_sql, conn, sql)
     except Exception as error:
         retried = True
-        sql, _, fix_cost = fix_sql(client, system_prompt, question, sql, error)
-        cost += fix_cost
+        sql, usage, cost = stats.timed("fix_sql", fix_sql, client, system_prompt, question, sql, error)
+        stats.add(usage, cost)
         try:
-            result = run_sql(conn, sql)
+            result = stats.timed("run_sql", run_sql, conn, sql)
         except Exception as error2:
             return {"ok": False, "cannot_answer": False, "sql": sql, "error": str(error2),
-                    "assumptions": assumptions, "retried": True,
-                    "cost": cost, "seconds": time.perf_counter() - start}
+                    "assumptions": assumptions, "retried": True}
 
-    answer, _, answer_cost = answer_in_english(client, question, sql, result, assumptions)
-    cost += answer_cost
+    answer, usage, cost = stats.timed("write_answer", answer_in_english,
+                                      client, question, sql, result, assumptions)
+    stats.add(usage, cost)
     return {"ok": True, "cannot_answer": False, "answer": answer, "sql": sql, "result": result,
-            "assumptions": assumptions, "retried": retried,
-            "cost": cost, "seconds": time.perf_counter() - start}
+            "assumptions": assumptions, "retried": retried}
 
 
 def main():

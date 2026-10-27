@@ -84,6 +84,10 @@ flowchart LR
   database is indexed, so well-meant but clumsy queries rarely get near the limit.
 - **Bounded self-correction:** a failing or blocked query is sent back to the model with
   the error, once. If it still fails, the user gets "I couldn't answer this", not a guess.
+- **Every question is logged** (question, SQL, assumptions, outcome, answer, tokens, cost,
+  time per stage, prompt version) to a JSON Lines file; result rows are never logged.
+  `log_report.py` summarises usage, cost, speed, refusals and which views answer
+  questions. On AWS this maps to CloudWatch Logs and Athena.
 - **Two calls, two jobs:** one writes SQL; the other explains the result, may only use
   numbers that appear in it, and gives the full row count (long results are saved to CSV).
 
@@ -125,9 +129,12 @@ regardless of column names, row order or rounding.
 | v0 | Schema + allowed values only | 5 / 15 (33%) | – | $0.0009 | 6.6 s |
 | v1 | + business glossary + worked examples + timeouts | 15 / 15 (100%), 3 runs out of 3 | 5 / 10 (50%) | $0.0012–0.0016 | 7–10 s |
 | v2 | + JSON reply with honest refusals and assumptions, SELECT-only check, row limit, indexes | 15 / 15 (100%) | 7–8 / 10 (70–80%), 2 runs | $0.0014 | 7.7 s |
-| v3 | + semantic layer: verified SQL views for the business definitions | **15 / 15 (100%)** | **8 / 10 (80%)** | $0.0015 | 7.8 s |
+| v3 | + semantic layer: verified SQL views for the business definitions | 15 / 15 (100%) | 8 / 10 (80%) | $0.0015 | 7.8 s |
+| v3.1 | + glossary gaps closed (week numbers, node closures, unforecast days), 3 more views | **20 / 20 (100%)** | refresh pending | $0.0016 | 7.7 s |
 
 All scores use the current answer key and judge ([change log](evals/golden_changes.md)).
+In v3.1, four held-out questions moved to the dev set once their definitions were added
+to the glossary, so they no longer count as unseen; a fresh held-out set replaces them.
 
 **What the v0 failures showed** ([analysis](evals/baseline_analysis.md)):
 7 of 9 failures were business definitions, not SQL skill. A glossary of agreed
@@ -153,7 +160,7 @@ definitions and three worked SQL patterns fixed all of them on the dev set.
   undefined, the model picks a different reading from run to run.
 
 **What v3 changed** ([analysis](evals/v3_results.md)): accuracy stayed the same, but
-the business logic moved out of the AI's SQL into four tested views. The AI now writes
+the business logic moved out of the AI's SQL into tested views (four, then seven in v3.1). The AI now writes
 71% fewer joins and no business rules (CASE logic 4 → 0); weekly attainment went from
 29 lines of SQL to 9. New questions have far fewer places to go wrong, and the copilot
 reads the same definitions a dashboard would.
@@ -161,13 +168,24 @@ reads the same definitions a dashboard would.
 The gap between dev and held-out is the point of the held-out set: dev accuracy measures
 how well the copilot was fitted, held-out accuracy estimates what a user would see.
 
+## What the logs show (20-question run, v3.1)
+
+| | |
+|---|---|
+| Cost | **$1.61 per 1,000 questions**; ~60% of it is the fixed prompt (caching target) |
+| Time per question | 7.1 s average, 15.3 s at the 95th percentile |
+| Where the time goes | Writing SQL 64% · writing the answer 30% · **running SQL 5%** |
+| Semantic layer coverage | **90%** of answers use a view; the rest are simple lookups |
+
+The database is no longer the bottleneck; speed and cost now depend on the model calls.
+
 ## Next
 
 | Change | Targets |
 |---|---|
-| Extend the glossary (week numbering, node closures, unforecast days), then write a fresh held-out set | Remaining held-out failures; honest re-measurement |
+| Fresh held-out set (50 questions in total), including more questions the data can't answer | Honest re-measurement after v3.1 |
 | Ask a clarifying question when a term is ambiguous and the answer depends on it | Trust |
-| Log every call (question, SQL, tokens, cost, latency) | Observability |
+| Prompt caching for the fixed prompt (~8–9k tokens per call) | Cost |
 | Compare models on accuracy, cost and latency | Evidence-based model choice |
 
 ## Run it
@@ -193,7 +211,8 @@ python evals/run_evals.py --set heldout   # score the held-out set
 ## Repository
 
 ```
-copilot.py              question → SQL → read-only run → answer
+copilot.py              question → SQL → read-only run → answer (logged)
+log_report.py           usage, cost, speed and outcomes from the call log
 generate_data.py        builds the synthetic network (seed 42)
 docs/data_model.md      tables, business definitions, planted scenarios
 docs/semantic_layer.md  what each view and column means, sent with every question
