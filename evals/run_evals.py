@@ -36,9 +36,9 @@ RESULTS_DIR = PROJECT_ROOT / "evals" / "results"
 def load_golden(set_name, only_ids):
     """Read the golden questions. keep_default_na=False keeps empty text as ''."""
     golden = pd.read_csv(GOLDEN_FILES[set_name], keep_default_na=False)
-    if "expect_refusal" not in golden.columns:
-        golden["expect_refusal"] = False
-    golden["expect_refusal"] = golden["expect_refusal"].astype(str) == "True"
+    if "expect" not in golden.columns:  # older answer keys
+        refusal = golden.get("expect_refusal", pd.Series(False, index=golden.index))
+        golden["expect"] = ["refusal" if str(r) == "True" else "" for r in refusal]
     if only_ids:
         golden = golden[golden["id"].isin(only_ids)]
     return golden
@@ -57,9 +57,28 @@ def evaluate_one(client, conn, system_prompt, row):
                    "seconds": out["seconds"], "ai_sql": out["sql"],
                    "assumptions": " | ".join(out.get("assumptions", []))})
 
+    # Should ask a clarifying question first: recorded, not scored yet.
+    if row["expect"] == "clarify":
+        how = ("refused" if out.get("cannot_answer") else
+               f"answered ({len(out['result'])} rows)" if out["ok"] else "failed")
+        return {**record, "passed": None, "ai_answer": out.get("answer", ""),
+                "reason": f"clarify expected (not scored): {how}"}
+
+    # No data for this case: refusing or returning nothing are both correct.
+    if row["expect"] == "no_data":
+        if out.get("cannot_answer"):
+            return {**record, "passed": True, "ai_answer": "",
+                    "reason": f"no data, refused: {out['error'][:70]}"}
+        if out["ok"] and out["result"].fillna(0).isin([0, 0.0, ""]).all().all():
+            return {**record, "passed": True, "ai_answer": out["answer"],
+                    "reason": "no data, returned nothing"}
+        rows = len(out["result"]) if out["ok"] else 0
+        return {**record, "passed": False, "ai_answer": out.get("answer", ""),
+                "reason": f"no data expected, but answered with {rows} rows"}
+
     # The data can't answer this question: pass only if the copilot gave no answer.
     # An empty table is still an answer ("none matched"), so it fails.
-    if row["expect_refusal"]:
+    if row["expect"] == "refusal":
         if out.get("cannot_answer"):
             return {**record, "passed": True, "ai_answer": "",
                     "reason": f"refused as expected: {out['error'][:80]}"}
@@ -81,7 +100,10 @@ def evaluate_one(client, conn, system_prompt, row):
 
 
 def print_summary(report, set_name):
-    """Score overall and by difficulty, plus cost and time."""
+    """Score overall and by difficulty, plus cost and time. Unscored rows are left out."""
+    unscored = report[report["passed"].isna()]
+    report = report[report["passed"].notna()].copy()
+    report["passed"] = report["passed"].astype(bool)
     total = len(report)
     passed = int(report["passed"].sum())
     print("\n" + "=" * 60)
@@ -94,6 +116,8 @@ def print_summary(report, set_name):
           f"${report['cost_usd'].mean():.5f} per question")
     print(f"Time: {report['seconds'].mean():.1f}s average, {report['seconds'].max():.1f}s slowest")
     print(f"Retried after SQL error: {int(report['retried'].sum())}")
+    if len(unscored):
+        print(f"Not scored (clarify expected): {len(unscored)}")
     print("=" * 60)
 
 
@@ -116,7 +140,7 @@ def main():
     for _, row in golden.iterrows():
         rec = evaluate_one(client, conn, system_prompt, row)
         records.append(rec)
-        mark = "PASS" if rec["passed"] else "FAIL"
+        mark = "----" if rec["passed"] is None else "PASS" if rec["passed"] else "FAIL"
         print(f"{rec['id']:3s} {mark}  {rec['seconds']:5.1f}s  {rec['reason']}")
 
     report = pd.DataFrame(records)

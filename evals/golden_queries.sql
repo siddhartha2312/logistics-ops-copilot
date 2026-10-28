@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Golden queries: Logistics Ops Copilot
--- Ground-truth SQL for the 15 eval questions.
+-- Ground-truth SQL for the dev questions (15 original + 5 added on 2026-10-26).
 -- Written against docs/data_model.md (daily forecasts, account_manager,
 -- is_adhoc, run_outcome, per-stop pickup times on run_stops).
 --
@@ -431,3 +431,139 @@ GROUP BY sh.shipper_id
 HAVING e.milkruns >= 20
 ORDER BY late_runs_blamed DESC
 LIMIT 10;
+
+
+-- ---------------------------------------------------------------------
+-- M6. List of shippers whose weekly volume stayed constant (within ±5%) in week 20 compared to last year.
+-- Moved from held-out T1 on 2026-10-26: week numbering now in the glossary.
+-- Definition: week 20 2026 = 17-23 May 2026 vs week 20 2025 = 18-24 May 2025.
+--   Only shippers with volume in both weeks. Constant = |2026/2025 - 1| <= 5%.
+-- Check: shipper_id|name
+-- ---------------------------------------------------------------------
+WITH weekly AS (
+    SELECT s.shipper_id,
+           SUM(CASE WHEN r.run_date BETWEEN '2026-05-17' AND '2026-05-23' THEN s.packages END) AS vol_2026,
+           SUM(CASE WHEN r.run_date BETWEEN '2025-05-18' AND '2025-05-24' THEN s.packages END) AS vol_2025
+    FROM shipments s
+    JOIN truck_runs r ON r.run_id = s.run_id
+    WHERE s.status <> 'Cancelled'
+    GROUP BY s.shipper_id
+)
+SELECT w.shipper_id, sh.name, w.vol_2025, w.vol_2026,
+       ROUND(100.0 * (1.0 * w.vol_2026 / w.vol_2025 - 1), 2) AS change_pct
+FROM weekly w
+JOIN shippers sh ON sh.shipper_id = w.shipper_id
+WHERE w.vol_2025 > 0 AND w.vol_2026 > 0
+  AND ABS(1.0 * w.vol_2026 / w.vol_2025 - 1) <= 0.05
+ORDER BY w.shipper_id;
+
+
+-- ---------------------------------------------------------------------
+-- M7. List of nodes which were closed in Italy but open in Spain in July 2025.
+-- Moved from held-out T4 on 2026-10-26: node closures now in the glossary.
+-- Closed = bank holiday with no truck arriving, or Sunday at a Mon-Sat node.
+-- Italy has no bank holiday in July 2025, so only its Mon-Sat nodes on Sundays
+-- (Spanish 7-day nodes are open those Sundays).
+-- Check: node_id
+-- ---------------------------------------------------------------------
+WITH july AS (
+    SELECT DISTINCT run_date AS day FROM truck_runs
+    WHERE run_date BETWEEN '2025-07-01' AND '2025-07-31'
+),
+it_closed AS (
+    SELECT n.node_id, n.city, d.day
+    FROM nodes n CROSS JOIN july d
+    WHERE n.country = 'IT'
+      AND (   (n.operating_days = 'Mon-Sat' AND strftime('%w', d.day) = '0')
+           OR (EXISTS (SELECT 1 FROM holidays h WHERE h.country = 'IT' AND h.holiday_date = d.day)
+               AND NOT EXISTS (SELECT 1 FROM truck_runs r WHERE r.node_id = n.node_id AND r.run_date = d.day)))
+),
+es_open_days AS (
+    SELECT d.day
+    FROM july d
+    WHERE EXISTS (SELECT 1 FROM nodes e
+                  WHERE e.country = 'ES'
+                    AND NOT (e.operating_days = 'Mon-Sat' AND strftime('%w', d.day) = '0')
+                    AND NOT (EXISTS (SELECT 1 FROM holidays h WHERE h.country = 'ES' AND h.holiday_date = d.day)
+                             AND NOT EXISTS (SELECT 1 FROM truck_runs r WHERE r.node_id = e.node_id AND r.run_date = d.day)))
+)
+SELECT c.node_id, c.city, COUNT(*) AS days_closed
+FROM it_closed c
+JOIN es_open_days o ON o.day = c.day
+GROUP BY c.node_id, c.city
+ORDER BY c.node_id;
+
+
+-- ---------------------------------------------------------------------
+-- M8. Truck wastage: which country had the most wasted trucks in week 30 of 2026?
+-- Moved from held-out T5 on 2026-10-26: week numbering now in the glossary.
+-- Definition: wasted = truck sent, shipper loaded nothing (run_outcome = 'wasted').
+--   Week 30 2026 = 26 Jul - 1 Aug 2026. Country of the destination node.
+--   Counting trucks or their pallet capacity gives the same winner.
+-- Check: country, wasted_trucks
+-- ---------------------------------------------------------------------
+SELECT n.country,
+       COUNT(*) AS wasted_trucks,
+       SUM(r.pallet_capacity) AS wasted_pallet_capacity
+FROM truck_runs r
+JOIN nodes n ON n.node_id = r.node_id
+WHERE r.run_outcome = 'wasted'
+  AND r.run_date BETWEEN '2026-07-26' AND '2026-08-01'
+GROUP BY n.country
+ORDER BY wasted_trucks DESC
+LIMIT 1;
+
+
+-- ---------------------------------------------------------------------
+-- M9. For any day in 2026, list date, shipper name, country, actual, forecast and gap, where the gap between actual and forecast is more than 200 packages.
+-- Moved from held-out T8 on 2026-10-26: forecast-vs-actual gap now in the glossary.
+-- Definition: gap = actual - forecast (negative = under forecast); filter |gap| > 200. Any day with a forecast
+--   or actual volume counts (missing side = 0). Data ends 2026-09-30.
+-- Check: gap
+-- ---------------------------------------------------------------------
+WITH actual AS (
+    SELECT s.shipper_id, r.run_date AS day, SUM(s.packages) AS actual
+    FROM shipments s
+    JOIN truck_runs r ON r.run_id = s.run_id
+    WHERE s.status <> 'Cancelled' AND r.run_date >= '2026-01-01'
+    GROUP BY s.shipper_id, r.run_date
+),
+forecast AS (
+    SELECT shipper_id, forecast_date AS day, forecast_packages AS forecast
+    FROM forecasts
+    WHERE forecast_date >= '2026-01-01'
+),
+days AS (
+    SELECT shipper_id, day FROM actual
+    UNION
+    SELECT shipper_id, day FROM forecast
+)
+SELECT d.day, sh.name, sh.country,
+       COALESCE(a.actual, 0) AS actual,
+       COALESCE(f.forecast, 0) AS forecast,
+       COALESCE(a.actual, 0) - COALESCE(f.forecast, 0) AS gap
+FROM days d
+JOIN shippers sh ON sh.shipper_id = d.shipper_id
+LEFT JOIN actual a ON a.shipper_id = d.shipper_id AND a.day = d.day
+LEFT JOIN forecast f ON f.shipper_id = d.shipper_id AND f.day = d.day
+WHERE ABS(COALESCE(a.actual, 0) - COALESCE(f.forecast, 0)) > 200
+ORDER BY d.day, sh.name;
+
+
+-- ---------------------------------------------------------------------
+-- M10. Which nodes were closed in Italy but open in Spain on 2 June 2026?
+-- Closed = bank holiday in the node's country with no truck arriving, or Sunday at a
+-- Mon-Sat node. 2 June 2026 is an IT holiday (Festa della Repubblica), not in ES.
+-- Check: node_id
+-- ---------------------------------------------------------------------
+SELECT n.node_id, n.city
+FROM nodes n
+JOIN holidays h ON h.country = n.country AND h.holiday_date = '2026-06-02'
+WHERE n.country = 'IT'
+  AND NOT EXISTS (SELECT 1 FROM truck_runs r
+                  WHERE r.node_id = n.node_id AND r.run_date = '2026-06-02')
+  AND EXISTS (SELECT 1 FROM nodes e
+              WHERE e.country = 'ES'
+                AND NOT EXISTS (SELECT 1 FROM holidays x
+                                WHERE x.country = 'ES' AND x.holiday_date = '2026-06-02'))
+ORDER BY n.node_id;

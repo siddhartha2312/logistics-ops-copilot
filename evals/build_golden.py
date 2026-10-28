@@ -38,17 +38,21 @@ def split_queries(text):
         # Level comes from the ID letter (E/M/H) or a "-- Level:" line.
         level_line = re.search(r"-- Level: (\w+)", block)
         level = level_line.group(1) if level_line else LEVELS[qid[0]]
-        # "-- Expect: refusal" = the data can't answer it; there is no SQL.
-        expect_refusal = bool(re.search(r"-- Expect: refusal", block))
+        # "-- Expect: refusal | no_data | clarify" = no SQL answer key:
+        #   refusal = the data can't answer it; no_data = refusing or "nothing found"
+        #   are both correct; clarify = should ask first (recorded, not scored yet).
+        expect_line = re.search(r"-- Expect: (\w+)", block)
+        expect = expect_line.group(1) if expect_line else ""
+        expect_refusal = expect == "refusal"
         # "-- Check: col_a, col_b|col_c" names the columns that ARE the answer.
         check = re.search(r"-- Check: (.*)", block)
         check_columns = check.group(1).strip() if check else ""
         if check_columns.startswith("("):  # e.g. "(expect no rows)"
             check_columns = ""
-        sql = "" if expect_refusal else block.strip().rstrip(";")
+        sql = "" if expect else block.strip().rstrip(";")
         queries.append({"id": qid, "difficulty": level, "question": question,
-                        "check_columns": check_columns, "expect_refusal": expect_refusal,
-                        "sql": sql})
+                        "check_columns": check_columns, "expect": expect,
+                        "expect_refusal": expect_refusal, "sql": sql})
     return queries
 
 
@@ -60,9 +64,9 @@ def main():
 
     rows = []
     for q in queries:
-        if q["expect_refusal"]:
+        if q["expect"]:
             rows.append({**q, "answer_rows": 0, "answer_json": "[]"})
-            print(f"{q['id']:3s} {q['difficulty']:6s} refusal    {q['question'][:60]}")
+            print(f"{q['id']:3s} {q['difficulty']:6s} {q['expect']:10s} {q['question'][:60]}")
             continue
         result = pd.read_sql(q["sql"], conn)
         rows.append(

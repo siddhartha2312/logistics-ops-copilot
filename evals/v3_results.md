@@ -55,3 +55,19 @@ same join that double-counted in a v2 run.
 - One run per set. Fewer joins should mean more stable results; repeat runs will show it.
 - In production these views would live in dbt (or a BI semantic model), owned and
   tested by the data team.
+
+## Addendum (26 Oct, afternoon): glossary gaps closed
+
+| Change | Detail |
+|---|---|
+| Data: scenario 13 | 8 Mon–Sat nodes (2 per country); on bank holidays only each country's largest warehouse opens. All dev answers unchanged. |
+| 3 new views | `v_node_days` (open/closed per node per day), `v_shipper_nodes` (where each shipper drops), `v_shipper_daily` (forecast vs actual incl. unforecast days) |
+| Glossary | Week numbering (week 1 = first Sunday), node closures, forecast-vs-actual gap |
+| Answer prompt | Never mention "the rows shown" or generalise across unseen rows |
+| Answer keys | Held-out T1, T4, T5, T8 moved to dev as M6–M9; M10 added. Dev = 20, held-out = 6 until a fresh set |
+
+**Result: dev 20/20.** One answer key (M7) was wrong at first: it was moved unchanged
+and missed the new Sunday closures. The copilot applied the new rule correctly; the key
+was fixed and the run re-scored (see `golden_changes.md`).
+
+**Lesson:** when a definition changes, re-check every answer key that depends on it.

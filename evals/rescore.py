@@ -40,10 +40,16 @@ def main():
     for i, row in report.iterrows():
         gold_row = golden.loc[row["id"]]
         gold_result = pd.DataFrame(json.loads(gold_row["answer_json"]))
-        refusal = str(gold_row.get("expect_refusal", "")) == "True"
+        expect = str(gold_row.get("expect", "")) or (
+            "refusal" if str(gold_row.get("expect_refusal", "")) == "True" else "")
+        refusal = expect == "refusal"
+        if expect == "clarify":  # not scored yet
+            print(f"{row['id']:3s} ----  clarify expected (not scored)")
+            report.at[i, "passed"] = None
+            continue
         if not str(row["ai_sql"]).strip():  # the copilot refused: no SQL was written
-            passed = refusal
-            reason = "refused as expected" if refusal else "refused an answerable question"
+            passed = expect in ("refusal", "no_data")
+            reason = "refused as expected" if passed else "refused an answerable question"
             was = str(row["passed"]) == "True"
             flag = "  <- changed" if passed != was else ""
             changed += passed != was
@@ -55,6 +61,9 @@ def main():
             ai_result = pd.read_sql(row["ai_sql"], conn)
             if refusal:  # an answer of any size, even empty, is not a refusal
                 passed, reason = False, f"refusal expected, but answered with {len(ai_result)} rows"
+            elif expect == "no_data":
+                passed = bool(ai_result.fillna(0).isin([0, 0.0, ""]).all().all())
+                reason = "no data, returned nothing" if passed else f"no data expected, but {len(ai_result)} rows"
             else:
                 passed, reason = compare_results(gold_result, ai_result, gold_row["check_columns"])
         except Exception as error:
@@ -69,7 +78,9 @@ def main():
         report.at[i, "passed"] = passed
         report.at[i, "reason"] = reason
 
-    total, ok = len(report), int(report["passed"].astype(bool).sum())
+    report = report[report["passed"].notna() & (report["passed"].astype(str) != "")].copy()
+    report["passed"] = report["passed"].astype(str).isin(["True", "1", "1.0"])
+    total, ok = len(report), int(report["passed"].sum())
     print(f"\nRe-scored: {ok}/{total} = {100 * ok / total:.0f}%  ({changed} changed)")
     for level in ["easy", "medium", "hard"]:
         part = report[report["difficulty"] == level]
