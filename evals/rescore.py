@@ -33,6 +33,7 @@ def main():
         sys.exit(1)
     set_name = sys.argv[sys.argv.index("--set") + 1] if "--set" in sys.argv else "dev"
     report = pd.read_csv(sys.argv[1], keep_default_na=False)
+    report["passed"] = report["passed"].astype(object)  # holds True/False/None
     golden = pd.read_csv(GOLDEN_FILES[set_name], keep_default_na=False).set_index("id")
     conn = sqlite3.connect(f"file:{DB_FILE}?mode=ro", uri=True)
 
@@ -62,7 +63,8 @@ def main():
             if refusal:  # an answer of any size, even empty, is not a refusal
                 passed, reason = False, f"refusal expected, but answered with {len(ai_result)} rows"
             elif expect == "no_data":
-                passed = bool(ai_result.fillna(0).isin([0, 0.0, ""]).all().all())
+                passed = (ai_result.empty or bool(ai_result.fillna(0).isin([0, 0.0, ""]).all().all())
+                          or bool(ai_result.isna().all().any()))
                 reason = "no data, returned nothing" if passed else f"no data expected, but {len(ai_result)} rows"
             else:
                 passed, reason = compare_results(gold_result, ai_result, gold_row["check_columns"])
@@ -79,7 +81,7 @@ def main():
         report.at[i, "reason"] = reason
 
     report = report[report["passed"].notna() & (report["passed"].astype(str) != "")].copy()
-    report["passed"] = report["passed"].astype(str).isin(["True", "1", "1.0"])
+    report["passed"] = report["passed"].astype(str).isin(["True", "1", "1.0"])  # mixed types → bool
     total, ok = len(report), int(report["passed"].sum())
     print(f"\nRe-scored: {ok}/{total} = {100 * ok / total:.0f}%  ({changed} changed)")
     for level in ["easy", "medium", "hard"]:

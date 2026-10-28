@@ -55,3 +55,59 @@ no API calls.
 
 - 10 questions: one question is 10 points.
 - One run. Dev results were stable over 3 runs; held-out stability not yet checked.
+
+---
+
+# Held-out batch 2: 32 questions (28 Oct 2026)
+
+**Model** `claude-haiku-5-5` · copilot v3.2, unchanged · 26 new questions drafted by the
+builder from real logistics pain points (not from the glossary), reviewed by the domain
+owner, answer keys committed before the run · plus the 6 earlier unseen questions.
+
+| Category | Questions | Result |
+|---|---|---|
+| Answerable | 21 | 15 / 21 |
+| Data doesn't exist (must refuse) | 6 | **6 / 6** |
+| No data for this case (refuse or "nothing found") | 2 | **2 / 2** |
+| Should ask first (not scored yet) | 3 | answered all 3 with an assumption |
+| **Scored total** | **29** | **23 / 29 (79%)** |
+
+First scored 21/29. Two checker errors were fixed and the run re-scored
+(see `golden_changes.md`): T20 answered "1 day" correctly but the key also demanded the
+node; T25 correctly said "no average can be calculated, no resolution dates" but the rule
+for "no data" was too strict.
+
+## The 6 failures: all definitions, none SQL, none honesty
+
+| ID | Question | The copilot's reading | The agreed reading |
+|---|---|---|---|
+| T13 | Avg pickup delay by carrier, UK, Q3 | Included wasted runs | Completed runs only (no pickup on a wasted run) |
+| T17 | Top 10 by volume growth | % growth, no minimum: a shipper going 24 → 2,401 tops the list | % growth, min 500 packages in Q2 |
+| T23 | Forecast accuracy by country | Attainment (actual ÷ forecast) | 1 − total abs. error ÷ forecast (WAPE) |
+| T24 | Shippers that don't send a forecast | Never sent any forecast → none | Ship on days without a forecast → 577 |
+| T28 | On-time "lately" | Last 30 days, by week | Last month (Sep 2026) |
+| T34 | Packages damaged at Lyon | Sum of packages on damaged shipments (982) | Count of damaged shipments (18) |
+
+Every one stated its reading as an assumption, and in T24 and T34 the copilot's reading
+is as defensible as the key. These are the cases a clarifying question should handle.
+
+## Findings
+
+1. **Honesty holds on new ground:** 8/8 refusal and no-data questions handled correctly,
+   including "no average: none of the 1,519 holds has a resolution date".
+2. **The remaining gap is vocabulary, not SQL.** Growth, accuracy, "lately", "damaged
+   packages": terms the glossary doesn't define. The fix is definitions (or asking).
+3. **The clarify baseline:** asked "which of MY shippers…", it answered for all shippers
+   and noted the assumption. Friday's change should make it ask instead.
+4. **Data freshness trap (also in the answer key):** shipments picked up in late September
+   whose promised date is after the data ends count as "not on time" (1,686 in Sep 2026).
+   September on-time is 76.0% by the current rule, ~80.5% if not-yet-due shipments are
+   left out. The copilot even reported a "drop to 17%" in the last week for this reason.
+   A business decision is needed: measure on-time only for shipments already due.
+5. **Data quality:** wasted runs carry an actual pickup time although nothing was picked up.
+
+## Limits
+
+- One run. Questions were drafted by the builder (who also wrote the glossary), so this
+  set may be easier than truly independent questions; reviewed by the domain owner.
+- 29 scored questions: one question ≈ 3.4 points.

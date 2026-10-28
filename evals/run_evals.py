@@ -44,6 +44,14 @@ def load_golden(set_name, only_ids):
     return golden
 
 
+def shows_no_data(result):
+    """True if a result says "nothing found": empty, all zeros, or a column that is
+    entirely NULL (e.g. an average that can't be computed because no dates exist)."""
+    if result.empty or result.fillna(0).isin([0, 0.0, ""]).all().all():
+        return True
+    return bool(result.isna().all().any())
+
+
 def evaluate_one(client, conn, system_prompt, row):
     """Ask the copilot one golden question and compare with the golden answer."""
     record = {"id": row["id"], "difficulty": row["difficulty"], "question": row["question"]}
@@ -69,9 +77,9 @@ def evaluate_one(client, conn, system_prompt, row):
         if out.get("cannot_answer"):
             return {**record, "passed": True, "ai_answer": "",
                     "reason": f"no data, refused: {out['error'][:70]}"}
-        if out["ok"] and out["result"].fillna(0).isin([0, 0.0, ""]).all().all():
+        if out["ok"] and shows_no_data(out["result"]):
             return {**record, "passed": True, "ai_answer": out["answer"],
-                    "reason": "no data, returned nothing"}
+                    "reason": "no data, returned nothing (empty, zero or NULL result)"}
         rows = len(out["result"]) if out["ok"] else 0
         return {**record, "passed": False, "ai_answer": out.get("answer", ""),
                 "reason": f"no data expected, but answered with {rows} rows"}

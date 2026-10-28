@@ -277,7 +277,7 @@ LIMIT 1;
 -- T20. on how many days in the last 3 months did any UK node go above 90% of capacity?
 -- Level: medium
 -- Definition: Jul-Sep 2026; node load = pallets loaded on runs arriving that day.
--- Check: node_id|city, days_over_90pct
+-- Check: days_over_90pct
 -- ---------------------------------------------------------------------
 WITH load AS (
     SELECT r.node_id, r.run_date, SUM(r.pallets_loaded) AS pallets

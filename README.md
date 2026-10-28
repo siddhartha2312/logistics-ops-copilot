@@ -130,7 +130,8 @@ regardless of column names, row order or rounding.
 | v1 | + business glossary + worked examples + timeouts | 15 / 15 (100%), 3 runs out of 3 | 5 / 10 (50%) | $0.0012–0.0016 | 7–10 s |
 | v2 | + JSON reply with honest refusals and assumptions, SELECT-only check, row limit, indexes | 15 / 15 (100%) | 7–8 / 10 (70–80%), 2 runs | $0.0014 | 7.7 s |
 | v3 | + semantic layer: verified SQL views for the business definitions | 15 / 15 (100%) | 8 / 10 (80%) | $0.0015 | 7.8 s |
-| v3.1 | + glossary gaps closed (week numbers, node closures, unforecast days), 3 more views | **20 / 20 (100%)** | refresh pending | $0.0016 | 7.7 s |
+| v3.1 | + glossary gaps closed (week numbers, node closures, unforecast days), 3 more views | 20 / 20 (100%) | (refreshed below) | $0.0016 | 7.7 s |
+| v3.2 | + call logging · **new 32-question held-out set** | **20 / 20 (100%)** | **23 / 29 (79%)** + 3 clarify, unscored | $0.0015 | 7.6 s |
 
 All scores use the current answer key and judge ([change log](evals/golden_changes.md)).
 In v3.1, four held-out questions moved to the dev set once their definitions were added
@@ -164,6 +165,11 @@ the business logic moved out of the AI's SQL into tested views (four, then seven
 71% fewer joins and no business rules (CASE logic 4 → 0); weekly attainment went from
 29 lines of SQL to 9. New questions have far fewer places to go wrong, and the copilot
 reads the same definitions a dashboard would.
+
+**What the larger held-out set showed** ([analysis](evals/heldout_results.md)): all 8
+"can't answer" and "no data" questions handled correctly; all 6 failures are business
+terms the glossary doesn't define (growth, forecast accuracy, "lately", damaged packages),
+each stated as an assumption. None was bad SQL. Next: clarifying questions.
 
 The gap between dev and held-out is the point of the held-out set: dev accuracy measures
 how well the copilot was fitted, held-out accuracy estimates what a user would see.
